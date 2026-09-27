@@ -1,0 +1,14 @@
+# Private working notes (not part of the submission)
+instructions.md
+claude_help.md
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+Dhaka_Tesla_Pool_PRD_Internship.pdf
