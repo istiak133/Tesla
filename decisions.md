@@ -466,3 +466,6 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 ### Project setup (2026-09-28)
 - [x] Node 24 LTS, npm, official CLIs (`nest new`, `create-next-app`), PostgreSQL 17, Prisma installed with no models (tables arrive with their features).
 - [x] **B5 revised: Vitest + Supertest instead of Jest; oxlint instead of ESLint for the API.** The original reason for Jest was "the NestJS default", and NestJS 12's CLI now scaffolds Vitest and oxlint, so the same reason now points the other way. Vitest keeps a Jest-compatible API, runs TypeScript without an extra transform, and is faster.
+
+### D-002 update (2026-09-28): auto-merge on green CI
+- [x] Manual merge replaced by GitHub auto-merge (his call). Each PR gets auto-merge enabled with the merge-commit method once it is ready; it merges by itself when the required checks `api`, `web` and `docker` pass and the branch is up to date with master. Squash and rebase stay disabled. Auto-merge is enabled by the account owner (not by a bot token), so merges stay attributed to Istiak Ahmed and the master push still triggers CI.
