@@ -53,7 +53,7 @@ jobs:
         run: npm run lint
 
       - name: Type check
-        run: npx tsc --noEmit -p tsconfig.json
+        run: npm run typecheck
 
       - name: Unit tests
         run: npm test
@@ -87,8 +87,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Generates Next.js route types (e.g. LayoutProps) first, then checks types.
       - name: Type check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Production build
         run: npm run build
