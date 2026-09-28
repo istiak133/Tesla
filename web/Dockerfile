@@ -6,6 +6,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+# The API address is baked into the proxy rules at build time.
+ARG API_URL=http://api:3001
+ENV API_URL=$API_URL
 RUN npm run build
 
 
