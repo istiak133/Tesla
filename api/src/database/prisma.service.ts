@@ -17,6 +17,8 @@ export class PrismaService
     const adapter = new PrismaPg({
       connectionString: config.get('DATABASE_URL', { infer: true }),
       max: config.get('DATABASE_POOL_MAX', { infer: true }),
+      // Give up after 5 seconds instead of waiting forever for a stuck database.
+      connectionTimeoutMillis: 5000,
     });
     super({ adapter });
   }

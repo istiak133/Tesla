@@ -1,11 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
 import { EnvironmentVariables, validateEnv } from './config/env.validation.js';
 import { buildLoggerParams } from './config/logger.config.js';
 import { DatabaseModule } from './database/database.module.js';
+import { HealthModule } from './health/health.module.js';
 
 @Module({
   imports: [
@@ -23,8 +22,7 @@ import { DatabaseModule } from './database/database.module.js';
         ),
     }),
     DatabaseModule,
+    HealthModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
