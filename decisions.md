@@ -462,3 +462,7 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - [x] Solo/shared: the passenger chooses; SHARED keeps the discount even if nobody joins.
 - [x] E1 request expiry: 5 minutes (`REQUEST_EXPIRY_MINUTES`).
 - [x] B9 privacy, B10 security baseline, B11 + Tier update (Tier 1 now includes C and E4; Tier 2 order: E1, Y hold, E7), P10.5 branch plan, P9.2, P9.3, P10.4, P12.1, P12.4, P12.5, PD.2–PD.8, hello-world deploy inside `feature/project-setup`: all approved as proposed in chat.
+
+### Project setup (2026-09-28)
+- [x] Node 24 LTS, npm, official CLIs (`nest new`, `create-next-app`), PostgreSQL 17, Prisma installed with no models (tables arrive with their features).
+- [x] **B5 revised: Vitest + Supertest instead of Jest; oxlint instead of ESLint for the API.** The original reason for Jest was "the NestJS default", and NestJS 12's CLI now scaffolds Vitest and oxlint, so the same reason now points the other way. Vitest keeps a Jest-compatible API, runs TypeScript without an extra transform, and is faster.
