@@ -19,3 +19,4 @@ codes_glossary.md
 node_modules/
 dist/
 coverage/
+*.tsbuildinfo
