@@ -1,7 +1,7 @@
 # Database Design (ERD)
 
 PostgreSQL. Money is stored as integer paisa. Times are `timestamptz` (UTC). Primary keys are UUIDs.
-Columns marked *(Tier 2)* are added by their own migration when that feature is built.
+Columns marked *(planned)* are added by their own migration when that feature is built.
 
 ```mermaid
 erDiagram
@@ -66,7 +66,7 @@ erDiagram
         enum status
         text idempotency_key
         int fare_paisa "locked at creation"
-        timestamptz expires_at "Tier 2"
+        timestamptz expires_at "planned"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -93,7 +93,7 @@ erDiagram
         enum end_reason
         int pickup_stop_index
         int dropoff_stop_index
-        timestamptz hold_expires_at "Tier 2"
+        timestamptz hold_expires_at "planned"
         timestamptz created_at
         timestamptz updated_at
     }
