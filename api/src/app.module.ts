@@ -5,6 +5,7 @@ import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { EnvironmentVariables, validateEnv } from './config/env.validation.js';
 import { buildLoggerParams } from './config/logger.config.js';
+import { DatabaseModule } from './database/database.module.js';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { buildLoggerParams } from './config/logger.config.js';
           config.get('LOG_LEVEL', { infer: true }),
         ),
     }),
+    DatabaseModule,
   ],
   controllers: [AppController],
   providers: [AppService],

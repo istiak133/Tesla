@@ -1,6 +1,13 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
-import { IsEnum, IsInt, Max, Min, validateSync } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  Matches,
+  Max,
+  Min,
+  validateSync,
+} from 'class-validator';
 
 export enum NodeEnv {
   Development = 'development',
@@ -34,6 +41,18 @@ export class EnvironmentVariables {
 
   @IsEnum(LogLevel)
   LOG_LEVEL: LogLevel = LogLevel.Info;
+
+  // Required: there is no sensible default for where the database lives.
+  @Matches(/^postgres(ql)?:\/\//, {
+    message: 'DATABASE_URL must be a postgresql:// connection string',
+  })
+  DATABASE_URL: string;
+
+  // Free database plans allow few connections, so the pool stays small.
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  DATABASE_POOL_MAX: number = 5;
 }
 
 export function validateEnv(
