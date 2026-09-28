@@ -12,3 +12,5 @@ claude_help.md
 .env.*
 !.env.example
 Dhaka_Tesla_Pool_PRD_Internship.pdf
+race_condition.md
+codes_glossary.md
