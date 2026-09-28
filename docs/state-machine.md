@@ -32,15 +32,15 @@ current stop. Unconfirmed holds are released on start.
 ```mermaid
 stateDiagram-v2
     [*] --> REQUESTED: passenger requests (fare locked)
-    REQUESTED --> HELD: fits a shared pool (Tier 2)
+    REQUESTED --> HELD: fits a shared pool (planned)
     REQUESTED --> MATCHED: driver accepts
     REQUESTED --> CANCELLED: passenger cancels
-    REQUESTED --> EXPIRED: 5 minutes, nobody accepted (Tier 2)
+    REQUESTED --> EXPIRED: 5 minutes, nobody accepted (planned)
     HELD --> MATCHED: driver confirms
     HELD --> REQUESTED: rejected / hold timeout / start / pool cancelled
     HELD --> CANCELLED: passenger cancels
     MATCHED --> IN_PROGRESS: picked up
-    MATCHED --> NO_SHOW: absent at pickup (Tier 2)
+    MATCHED --> NO_SHOW: absent at pickup (planned)
     MATCHED --> CANCELLED: passenger cancels before pickup
     MATCHED --> REQUESTED: driver cancels pool before start
     IN_PROGRESS --> COMPLETED: dropped off
@@ -59,7 +59,7 @@ A request returned to REQUESTED gets a fresh expiry time. Its locked fare does n
 
 ```mermaid
 stateDiagram-v2
-    [*] --> HELD: system hold (Tier 2)
+    [*] --> HELD: system hold (planned)
     [*] --> ACTIVE: driver accepts directly
     HELD --> ACTIVE: driver confirms
     HELD --> REJECTED: driver rejects
