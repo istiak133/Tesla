@@ -1,0 +1,105 @@
+# Runs on every pull request and on every push to master.
+# Three independent jobs run in parallel: api, web and docker.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  api:
+    name: api
+    runs-on: ubuntu-latest
+
+    # A real PostgreSQL for the e2e tests (never a mocked database).
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tesla
+          POSTGRES_PASSWORD: tesla
+          POSTGRES_DB: tesla_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tesla -d tesla_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # These credentials only exist inside this throwaway CI container.
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://tesla:tesla@localhost:5432/tesla_test
+
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install dependencies (also generates the Prisma client)
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Production build
+        run: npm run build
+
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the same images `docker compose up` uses, so a broken Dockerfile fails the PR.
+      - name: Build images
+        run: docker compose build
