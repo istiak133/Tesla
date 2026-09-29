@@ -6,8 +6,9 @@ A ride-pooling MVP: passengers request rides, drivers accept them, and several p
 vehicle without ever exceeding its seats. Built around the PRD's cast: driver **Jashim** and his
 three-seat **Bullet**, and passengers **Nusrat**, **Rafiq** and **Shirin**.
 
-> **Status:** project foundation is in place (API, web app, database, Docker, CI). Feature work is in
-> progress on `feature/*` branches. Sections marked *(coming)* are filled in as those features land.
+> **Status:** MVP complete. En-route pooling on fixed routes, the stop-by-stop trip, fares and the
+> driver/platform money split, with 52 unit and 40 end-to-end tests. Every design decision, with the
+> alternatives and the reason, is in [`decisions.md`](decisions.md).
 
 ---
 
@@ -64,9 +65,74 @@ explain afterwards exactly what happened.
 - System overview (request path, ERD, lifecycles): [`docs/system-overview.pdf`](docs/system-overview.pdf)
 - One ride end to end: [`docs/ride-flow.pdf`](docs/ride-flow.pdf)
 
+```mermaid
+flowchart LR
+    B["Browser<br/>passenger and driver screens"] -->|"HTTPS · session cookie"| W["Next.js on Vercel<br/>pages · TanStack Query · /api/* proxy"]
+    W -->|"same origin, no CORS"| A["NestJS API on Render<br/>controller → service → repository"]
+    A -->|"transactions · SELECT … FOR UPDATE"| D[("PostgreSQL on Neon<br/>CHECK constraints · partial unique indexes")]
+    W -. "polls every 3 s" .-> A
 ```
-Browser → Next.js (web, /api proxy) → NestJS (API) → PostgreSQL
+
+### Data model (ERD)
+
+```mermaid
+erDiagram
+    USERS ||--o{ SESSIONS : "logs in with"
+    USERS ||--o| VEHICLES : "drives"
+    USERS ||--o{ RIDE_REQUESTS : "requests"
+    ZONES ||--o{ ZONE_DISTANCES : "km between"
+    ROUTES ||--|{ ROUTE_STOPS : "stops in order"
+    ZONES ||--o{ ROUTE_STOPS : "is a stop of"
+    ROUTES ||--o{ VEHICLES : "chosen by"
+    VEHICLES ||--o{ POOLS : "runs"
+    ROUTES ||--o{ POOLS : "followed by"
+    POOLS ||--o{ POOL_MEMBERS : "carries"
+    RIDE_REQUESTS ||--o{ POOL_MEMBERS : "holds a seat as"
+    RIDE_REQUESTS ||--o{ RIDE_EVENTS : "history"
+    ZONES ||--o{ RIDE_REQUESTS : "pickup / drop-off"
+
+    VEHICLES {
+        uuid id PK
+        int seat_capacity "CHECK > 0"
+        bool is_online
+        uuid route_id FK
+        uuid current_zone_id FK
+    }
+    POOLS {
+        uuid id PK
+        uuid vehicle_id FK "one active per vehicle"
+        int current_stop "where the car is"
+        enum status
+        int seats_taken "CHECK <= seat_capacity"
+        int collected_paisa "= driver + platform"
+        int driver_earnings_paisa
+        int platform_fee_paisa
+    }
+    RIDE_REQUESTS {
+        uuid id PK
+        uuid passenger_id FK "one active per passenger"
+        int seats "CHECK 1..3"
+        enum status
+        int distance_km "direct"
+        int estimated_fare_paisa "solo, the maximum"
+        int final_fare_paisa "locked at drop-off"
+    }
+    POOL_MEMBERS {
+        uuid pool_id FK
+        uuid ride_request_id FK "one active seat per ride"
+        int pickup_stop "CHECK < dropoff_stop"
+        int dropoff_stop
+        timestamptz left_at
+    }
+    ROUTE_STOPS {
+        uuid route_id PK
+        int position PK
+        uuid zone_id FK
+        int km_from_start
+    }
 ```
+
+All columns, constraints and lifecycles: [`docs/system-overview.pdf`](docs/system-overview.pdf).
 
 ## Tech stack
 
@@ -80,8 +146,21 @@ Browser → Next.js (web, /api proxy) → NestJS (API) → PostgreSQL
 | Tests | Vitest + Supertest, integration tests against real PostgreSQL |
 | Tooling | Docker Compose, GitHub Actions |
 
-The reasons behind each choice, the alternatives considered and what would make us switch are recorded
-in [`decisions.md`](decisions.md). A summary is added here with the features *(coming)*.
+### Why these choices
+
+| Choice | Alternatives considered | Why it fits ride-pooling | When we would switch |
+|---|---|---|---|
+| **REST** | GraphQL, tRPC | Few resources and screens with fixed shapes; business rules map cleanly to HTTP status codes (409 for a lost seat, 403 for someone else's ride); simple to test with Supertest and to cache | GraphQL when several clients (mobile apps, partners) need different shapes of the same data and over-fetching becomes a real cost |
+| **NestJS** | Fastify, Express | Modules, controllers, services and guards enforce the layered architecture and keep auth checks in one place | For a single hot path, run Nest on its Fastify adapter; plain Fastify for a tiny service |
+| **PostgreSQL** | MongoDB, MySQL | Row locks, CHECK constraints and partial unique indexes make seat safety a database guarantee, not only a code promise | Never for the core; at scale add read replicas and split by city area |
+| **Prisma** | Drizzle, TypeORM, raw SQL | Typed client and migrations; raw SQL only for the vehicle lock and hand-written constraints | If most queries became hand-tuned SQL, a query builder (Drizzle, Kysely) |
+| **Database sessions** | JWT | An httpOnly cookie through the same-origin proxy, revocable at logout, no token handling in the browser | Short-lived JWTs when many services must verify users without a database call, or for native mobile apps |
+| **Next.js + TanStack Query** | React SPA (Vite), server-rendered pages | The `/api` rewrite gives a first-party cookie with no CORS; TanStack Query gives polling, loading and error states | A native app when drivers need background location |
+| **Polling every 3 s** | WebSockets, SSE | Simple, works on free hosting; correctness never depends on it because every action is re-checked under the lock (D-007) | Adaptive polling, then SSE or WebSockets with pub/sub as screens grow |
+| **Vitest + Supertest on a real PostgreSQL** | Jest, mocked database | Race conditions and constraints can only be proven against the real database | Not planned |
+| **Free tiers: Vercel, Render, Neon** | Koyeb, Fly.io, Supabase | Free, public URL, Docker for the API, managed Postgres | Paid plans to remove cold starts |
+
+Full reasoning for each: [`decisions.md`](decisions.md).
 
 ## Project structure
 
@@ -90,10 +169,18 @@ in [`decisions.md`](decisions.md). A summary is added here with the features *(c
 ├── api/                  NestJS API
 │   ├── prisma/           schema and migrations
 │   ├── src/
+│   │   ├── auth/         sign-up, login, sessions, guards (session, role)
+│   │   ├── users/        users repository
+│   │   ├── geography/    zones, distances, routes, destinations (+ the seed data)
+│   │   ├── rides/        passenger rides, PoolingService, the vehicle lock (RidesRepository)
+│   │   ├── driver/       DriverService (route, online, accept, suggestions), TripService (stop by stop)
+│   │   ├── pooling/      pure rules: route-plan.ts (R1–R4, sharing), route-suggestion.ts
+│   │   ├── fares/        pure rules: fare.ts (passenger fare), earnings.ts (driver / platform split)
+│   │   ├── seed/         zones, routes and the story cast
 │   │   ├── config/       environment validation, logger setup
 │   │   ├── database/     PrismaService (the single database client)
 │   │   └── health/       GET /health (controller → service → repository)
-│   └── test/             end-to-end tests
+│   └── test/             end-to-end tests against PostgreSQL
 ├── web/                  Next.js web app (proxies /api/* to the API)
 │   └── src/
 │       ├── app/          pages: /login, /signup, /ride (passenger), /driver
@@ -172,6 +259,21 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 CI runs lint, type checks, unit tests, migrations, end-to-end tests (against PostgreSQL), the web
 production build and the Docker image builds on every pull request.
 
+What the tests prove (the PRD's must-haves and the risky cases):
+
+| Requirement | Test |
+|---|---|
+| The PRD case: Nusrat and Shirin claim Bullet's last seat at the same instant (exactly one wins, five rounds) | `api/test/pooling.e2e-spec.ts` |
+| Capacity is never exceeded, even with 20 riders racing for Bullet's last seat | `api/test/pooling.e2e-spec.ts` |
+| The database refuses over-capacity and impossible stops, even bypassing the app | `api/test/pooling.e2e-spec.ts` |
+| Leaving a stop and a rider joining at that stop never both succeed | `api/test/pooling.e2e-spec.ts` |
+| Invalid transitions are rejected (wrong order, wrong stop, cancel after pickup) | `api/test/trip.e2e-spec.ts` |
+| Nusrat ৳60 and Rafiq ৳72 pooled, ৳75 alone, a handed-over seat is not sharing | `api/src/fares/fare.spec.ts`, `api/test/trip.e2e-spec.ts` |
+| Users cannot read or change other users' rides; roles cannot use each other's endpoints | `api/test/pooling.e2e-spec.ts` |
+| Cancellation rules, no-shows, the driver's trip cancel, and a cancel racing a trip cancel | `api/test/trip.e2e-spec.ts` |
+| Nobody loses money on any trip any route can sell (about 25,000 cases) | `api/src/fares/earnings.spec.ts` |
+| Everything together, from sign-up to the driver's earnings | `api/test/full-journey.e2e-spec.ts` |
+
 ## Demo credentials
 
 All demo accounts use the password **`tesla1234`** (local and demo use only).
@@ -185,7 +287,15 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 
 ## Deployment
 
-*(coming)* Planned on free tiers: Vercel (web), Render or Koyeb (API), Neon (PostgreSQL).
+**Live demo:** *URL added after the first deploy.* Free tiers: the API may take 30 to 60 seconds to wake up on the first request.
+
+| Part | Service | Settings |
+|---|---|---|
+| Database | **Neon** (PostgreSQL, free) | Use the direct connection string with `sslmode=require` |
+| API | **Render** web service (Docker, free) | Root `api`, health check `/health`; env `NODE_ENV=production`, `DATABASE_URL` (Neon), `DATABASE_POOL_MAX=5`, `LOG_LEVEL=info`, `TRUST_PROXY_HOPS=2` |
+| Web | **Vercel** (Next.js, free) | Root `web`; env `API_URL=https://<your-api>.onrender.com` |
+
+On every start the API container runs `prisma migrate deploy`, then the idempotent seed, then the server, so a fresh Neon database is ready with no manual step. The browser only talks to Vercel; the `/api/*` rewrite forwards to Render, so the session cookie stays first-party (Secure in production) and no CORS is needed.
 
 ## API overview
 
@@ -220,8 +330,6 @@ Business errors return `{ statusCode, code, message }`, e.g. `409 SEATS_UNAVAILA
 
 Through the web app every path is prefixed with `/api` (e.g. `/api/auth/login`).
 
-More endpoints are added with each feature *(coming)*.
-
 ## Fare model
 
 `(৳30 + direct km × ৳15) × seats`, minus **20%** if another passenger rode with you on at least one hop. The fare is locked when you are dropped off. The estimate shown at request time is the solo fare, so nobody pays more than they saw, and nobody pays for the route's detour. Money is stored in integer paisa.
@@ -238,24 +346,136 @@ Taking over a seat at the stop where someone else got off is not sharing: both p
 
 Routes, matching rules (R1–R4) and every other assumption: [`docs/assumptions.md`](docs/assumptions.md).
 
+## Concurrency: Bullet's last seat
+
+**The case:** Bullet has one seat left, and Nusrat and Shirin claim it at the same instant.
+
+**Now: "one vehicle = one line".** Every change to a vehicle's seats or trip runs in a transaction that first locks that vehicle's row (`SELECT … FOR UPDATE`, `lock_timeout` 3 s), so two actions on the same car run one after the other, never together.
+1. Both requests wait for Bullet's lock. The first one in re-checks the rules (R1–R4) on the locked data and takes the seat.
+2. The second one re-checks, finds no free seat, and stays **REQUESTED**: it is not dropped, and other drivers see it.
+3. Two database guards back this up even if the code had a bug: the seat update itself only succeeds if there is still room (`seats_taken ≤ capacity − n`, trip still active, car not past the pickup), and `CHECK seats_taken ≤ seat_capacity` refuses anything else. A compare-and-set on the request status means one request can never take two seats.
+4. The same lock serialises the en-route case: "the car leaves Mohakhali" and "Shirin joins at Mohakhali" can never both succeed.
+
+Tested with exactly this case (Nusrat and Shirin, five rounds), with 20 riders racing for the last seat (one wins, 19 keep waiting) and with the leave/join race. The design never deadlocks: every transaction takes a single vehicle lock, first, and a lock wait over 3 s returns `503 BUSY` instead of hanging.
+
+**At larger scale:** the lock is per vehicle, so different cars never block each other and seat safety needs no distributed lock. What changes is everything around it: more API instances, a connection pooler, reads moved off the primary, idempotent retries and push updates. See the next section.
+
+## Bonus: if Oi Tesla goes viral (1M passengers, 100k drivers)
+
+**First, the numbers.** Suppose 20% of passengers ride twice a day: about 400,000 rides a day, and in the busiest hour about 60,000 rides, or ~17 seat decisions per second. PostgreSQL handles that easily. The heavy load is elsewhere: 100k drivers sending a location every 4 s is **25,000 writes/s**, and screens polling every 3 s would be **~67,000 requests/s** of mostly "no change". So the plan keeps the seat decision where it is and moves the high-volume, low-value traffic away from it.
+
+```mermaid
+flowchart LR
+    P[Passenger and driver apps] -->|HTTPS| LB[Load balancer + rate limits]
+    LB --> API[API instances, stateless, autoscaled]
+    P <-->|SSE / WebSocket| RT[Realtime gateway]
+    API -->|seat decisions, one row lock per vehicle| PG[(PostgreSQL primary, one per city area)]
+    PG -->|replication| RR[(Read replicas: history, suggestions)]
+    API -->|live driver positions, TTL| MEM[(In-memory store, geo index)]
+    API -->|committed events| BUS[Event stream]
+    BUS --> RT
+    BUS --> W[Workers: notifications, fees, analytics]
+```
+
+| Topic | What we would do, and why |
+|---|---|
+| Load balancing, horizontal scaling | The API is already stateless (sessions are in the database), so run several instances behind a load balancer and autoscale on CPU and latency. |
+| Database contention | Keep "one row lock per vehicle": contention only exists inside one car, never between cars. Keep transactions short (distances loaded before the lock, as today). |
+| Indexing, read replicas | The hot queries are already indexed (`pools(status, route_id)`, `ride_requests(status, created_at)`, the partial unique indexes). Put a connection pooler (PgBouncer) in front. Serve history and suggestions from replicas; every seat decision stays on the primary. |
+| Partitioning | Routes are local to a city, so partition by area: one primary per area. A trip never spans two partitions, so no cross-database transactions. |
+| Caching | Cache what rarely changes (zones, routes, distances, destinations) in memory with a version key. Never cache seats or trip state: the lock decides those. |
+| Geospatial search | With live GPS, store each driver's last position in an in-memory geo index (Redis GEO or H3 cells) with a short TTL, and query "cars near this pickup, on a route that passes it". PostGIS for the static route shapes. |
+| Ride matching | Keep R1–R4 as the rule. Candidate search runs without a lock (as today); only the final seat is taken under the car's lock. For a very busy area, feed requests through a per-area queue so matching there runs in order. |
+| Queues and events | After a commit, publish "seat taken", "arrived", "dropped off" to an event stream (transactional outbox, so no event is lost or sent for a rolled-back change). Workers handle notifications, fee settlement and analytics outside the request. |
+| Real-time communication | Replace polling with SSE or WebSockets fed by the event stream; keep adaptive polling as a fallback. |
+| Rate limiting | Per user and per IP at the load balancer (as login and sign-up already are), stricter on ride requests and driver actions. |
+| Idempotency | An `Idempotency-Key` header on every write; the first response is stored with the key and returned for any retry, so a double tap on a slow network never books twice. |
+| Retry and failure strategy | A lock wait over 3 s already returns `503 BUSY`; clients retry with backoff and the same idempotency key. Auto-join is best effort: if it fails, the ride simply waits. Health checks remove broken instances. |
+| Observability | Already structured JSON logs with a request id per request. Add metrics (seat decisions/s, lock waits, `BUSY` rate, p95 latency), tracing across web → API → database, and alerts on `BUSY` spikes. |
+| Security | httpOnly Secure cookies, hashed session tokens and passwords, role and ownership checks (as today); add secrets in a manager, WAF and bot protection at the edge, audit logs for money changes, and least-privilege database users. |
+| Deployment strategy | Build once, migrate with backward-compatible migrations (add column → deploy → backfill → enforce), then roll out gradually (blue/green or canary) with automatic rollback on error-rate alerts. |
+
+What we would **not** add without a measured reason: microservices per feature, Kubernetes for a handful of services, or a queue in front of every write.
+
 ## Key decisions and trade-offs
 
-See [`decisions.md`](decisions.md). A summary is added at release *(coming)*.
+| Decision | Trade-off we accepted | Record |
+|---|---|---|
+| En-route pooling on fixed routes: a Tesla picks up anyone ahead on its route until full | Only trips a route carries without going far round are sold (72 of 102 zone pairs); more routes would serve the rest | D-008 |
+| One row lock per vehicle + database guards | Actions on the same car wait in line (fine: one car is in one place); no distributed locks or queues | D-004, `docs/assumptions.md` §9 |
+| Estimate = solo fare; −20% if you shared a hop; locked at drop-off | The final fare is known only at drop-off, but it can only go down | D-008 |
+| Driver paid for the work (৳10/km carried + ৳20/pickup), platform keeps the rest | Platform margin varies per trip; proven never below ৳10 by an exhaustive test | D-010 |
+| The system suggests a route, the driver decides | No automatic dispatch without live GPS | D-009 |
+| No seat hold: a fitting request takes its seat at once | The driver does not approve each join; they keep control through the route, accept, no-show and cancel | D-009 |
+| Polling every 3 s | Some wasted requests; simple and reliable on free hosting | D-007 |
+| Sessions in the database through a same-origin proxy | One database lookup per request; no CORS, revocable sessions | B4 |
+| Pull requests with CI gates and merge commits into a protected `master` | Slower than pushing directly; the history shows every step | D-002 |
 
 ## Known limitations
 
-- The API image includes the Prisma CLI so migrations can run at container start; free hosting tiers
-  usually lack a separate migration step. This makes the image larger (~790 MB).
-- More *(coming)*.
+- **No live GPS or maps.** Dhaka is 14 zones and 6 fixed routes; the car's position is the stop the driver reports. 30 of the 102 zone pairs on a route are not sold because the route goes too far round.
+- **Seats are counted per trip, not per stretch.** Anyone not yet dropped off holds their seat, so a join that would fit later on the route can be refused until someone gets off.
+- **Driver pay has no time component.** No per-minute rate for traffic, no pay for driving to the first pickup or empty stretches, no surge or incentives.
+- **Cash only.** The platform fee is recorded per trip, not collected.
+- **Polling, not push.** Screens refresh every 3 s (history every 10 s).
+- **No idempotency key.** A retried request gets a `409` rather than the original answer.
+- **Requests do not expire.** A waiting request stays until it is matched or cancelled.
+- **Demo helpers.** The login page has one-click demo accounts and the demo password is public; both are for the reviewer and must be turned off in a real deployment. Drivers cannot sign up (they are onboarded by the operator; one is seeded).
+- **Expired sessions are rejected but not deleted;** a cleanup job is not built.
+- **Hosting.** The free API tier sleeps when idle (slow first request), and the API image is large (~790 MB) because it includes the Prisma CLI to run migrations at start.
 
 ## Next improvements
 
-*(coming)*
+Each one, with how we would build it:
+
+| Improvement | How |
+|---|---|
+| **Push updates instead of polling** | An SSE endpoint per screen (`/rides/current/stream`, `/driver/stream`). After each committed change the API publishes an event (PostgreSQL `LISTEN/NOTIFY` for one instance, a pub/sub channel for several) and the stream sends the new state. Keep adaptive polling as the fallback: fast during a trip, slow when idle, paused in background tabs. |
+| **Idempotency keys** | The client sends an `Idempotency-Key` header on `POST /rides` and driver actions. A new `idempotency_keys` table (user, key, request hash, response, time) with a unique index on (user, key); the response is stored in the same transaction as the change, and a retry with the same key gets the stored response. Keys expire after 24 h. |
+| **Request expiry** | An `expires_at` on each request (e.g. 10 minutes) and a new `EXPIRED` status. Expired requests are skipped and marked under the lock at auto-join and accept, plus a small scheduled sweep for the rest. |
+| **"Pause new joins" for drivers** | An `accepting_joins` flag on the pool, changed under the vehicle lock. R4 checks it, and the conditional seat update includes it, so no join slips in after a pause. |
+| **Seats per stretch of the route** | Instead of one counter for the whole trip, check the busiest hop of the new rider's stretch: for [pickup, drop-off), the seats of everyone on board on each hop plus the new seats must stay within capacity. Computed under the lock from `pool_members`; the database guard becomes a per-hop row with its own CHECK. A car full to Mohakhali could then take someone from Mohakhali onwards in advance. |
+| **More routes, live GPS and dispatch** | Add routes from real demand (the zone pairs we cannot sell today). The driver app sends its position every few seconds; a geo index finds nearby cars on routes that pass the pickup; the request is offered to the best car and the driver accepts within a few seconds, or it goes to the next. A Leaflet + OpenStreetMap map on both screens. |
+| **Driver pay per minute and for dead km** | Store the arrive and depart time of each stop, add a per-minute rate and a small rate for driving to the first pickup, then re-run the exhaustive earnings test with the new rates before release, so no trip loses money. |
+| **TeslaPay wallet** | A double-entry ledger table. Paying a fare and deducting the platform fee happen in one transaction with a conditional update (`balance >= amount`), so a balance can never go negative. |
+| **Operations** | Driver onboarding (the operator creates the driver and vehicle after document checks), an admin view of trips and fees owed, a scheduled job that deletes expired sessions, and a `DEMO_MODE` flag that hides the demo buttons and skips demo accounts in production. |
+| **Scale** | The steps in the Bonus section above, in that order: connection pooler, replicas for reads, push updates, then partitioning by city area. |
 
 ## AI Usage
 
-*(completed at release)*
+**Tool:** Claude (Anthropic), through Claude Code in VS Code.
+
+**How the work was split.** I owned the product and the engineering decisions; Claude was my research partner and wrote the code to those decisions.
+
+| | Me | Claude |
+|---|---|---|
+| Product and business | What to build, the USP (en-route pooling on fixed routes), the pricing rules and who earns what | Researched options, ran the numbers (e.g. every trip on every route for the fare split), pointed out risks |
+| Architecture and design | The stack, the layered architecture, the data model, the concurrency approach, every rule in [`docs/assumptions.md`](docs/assumptions.md) | Laid out the options with trade-offs and failure cases (race conditions, edge cases), and gave a recommendation |
+| How the code is written | The rules the code must follow: controller → service → repository, one row lock per vehicle, database guards, money in integer paisa, tests against a real Postgres, readable code over clever code, one approved approach per feature | Wrote the code, tests, migrations and diagrams within those rules |
+| Delivery | Approved each feature's approach before it was built, had every change explained before committing it, committed and merged through PRs with CI | Explained each change, ran the checks, kept [`decisions.md`](decisions.md) up to date |
+
+**How each feature went:** I described the problem and my first idea; Claude researched the options; I chose, and the choice was written down in `decisions.md` with the alternatives and the reason (D-001 to D-011); then Claude implemented it and I checked the result (tests, CI, the running app) before committing.
+
+**Decisions where I went against the AI's recommendation**
+
+| Topic | AI recommended | My decision and why |
+|---|---|---|
+| Backend framework | Fastify (lighter, built-in logging and validation) | **NestJS**: its module/controller/service structure enforces the layered architecture I wanted. |
+| ORM | Drizzle | **Prisma**, with raw SQL only for the vehicle lock and the hand-written CHECK constraints. |
+| En-route pooling | Keep same-zone pooling and defer en-route pickups, to meet the deadline | **Build it** (D-008): picking people up along the route until the car is full is the product. It shipped with its own race tests. |
+| Fare split | The first model let the driver keep all cash, so the sharing discount was the driver's loss | **Three-party model** (D-010): I set the rule that the driver must never pay for a discount and the platform must earn. The driver is paid for the work, and a test over every possible trip proves nobody loses money. |
+
+**One suggestion accepted, one rejected** (the PRD's format)
+
+- **Accepted: "one vehicle = one line".** Every change to a vehicle's seats or trip locks that vehicle's row, backed by CHECK constraints and partial unique indexes. I chose it over Redis locks, queues and serializable transactions because the database guarantees correctness even if the code has a bug, it needs no extra infrastructure, and it can be tested with real races (20 riders for the last seat, "the car leaves" against "a rider joins at that stop").
+- **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead (D-009).
+
+**What I checked myself**
+- Every claim is backed by a test: 52 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
+- A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release (D-011).
+- No secrets, keys or personal data were given to the AI. Demo accounts use the reserved `.test` domain.
 
 ## Demo video
 
-*(coming)*
+*Link added at release.*
