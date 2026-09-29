@@ -124,7 +124,19 @@ erDiagram
     ZONES ||--o{ RIDE_REQUESTS : "pickup / drop-off"
     POOLS ||--o{ RIDE_REQUESTS : "late-cancel fees"
     RIDE_REQUESTS ||--o{ RIDE_REQUESTS : "fee paid with"
+    ZONES ||--o{ VEHICLES : "car is at"
+    POOLS ||--o{ RIDE_EVENTS : "during trip"
+    USERS ||--o{ RIDE_EVENTS : "actor (null = system)"
 
+    USERS {
+        uuid id PK
+        text email "unique, CHECK lower case"
+        text phone "unique, CHECK +8801XXXXXXXXX"
+        text present_address
+        text permanent_address
+        enum role "PASSENGER or DRIVER"
+        text password_hash "bcrypt"
+    }
     DRIVER_PROFILES {
         uuid user_id PK
         enum id_type "NID or PASSPORT"
@@ -133,6 +145,7 @@ erDiagram
     }
     VEHICLES {
         uuid id PK
+        uuid driver_id FK "unique: one car per driver"
         text plate_number "unique"
         int seat_capacity "CHECK > 0"
         bool is_online
@@ -142,6 +155,7 @@ erDiagram
     POOLS {
         uuid id PK
         uuid vehicle_id FK "one active per vehicle"
+        uuid route_id FK
         int current_stop "where the car is"
         enum status
         int seats_taken "CHECK <= seat_capacity"
