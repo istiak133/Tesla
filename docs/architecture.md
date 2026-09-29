@@ -42,7 +42,7 @@ flowchart TB
 - **Repository** is the only layer that talks to the database. `withVehicleLock(vehicleId, fn)` is the only way to change pools and memberships.
 - A lower layer never imports an upper one.
 
-Modules: `auth`, `users`, `vehicles`, `geography` (areas, routes), `fares`, `rides` (requests), `pools`, `health`.
+Modules: `health`, `auth` + `users` (sessions, guards), `geography` (zones, distances), `rides` (passenger endpoints, `PoolingService`, `RidesRepository` with the vehicle lock), `driver` (driver endpoints, `TripService`). Pure rules live in `fares/fare.ts` and `pooling/detour.ts`.
 
 ## Consistency model: "one vehicle = one line"
 
@@ -57,16 +57,18 @@ sequenceDiagram
     R->>DB: BEGIN; SELECT vehicle FOR UPDATE
     S->>DB: BEGIN; SELECT vehicle FOR UPDATE
     Note over S,DB: waits for Rafiq's lock
-    R->>DB: release expired holds; check seats (1 free)
-    R->>DB: UPDATE pools SET seats_taken += 1 WHERE status joinable
+    R->>DB: re-read pool; check M1–M4 (1 seat free)
+    R->>DB: UPDATE pools SET seats_taken += 1 WHERE status = MATCHED AND room left
     R->>DB: INSERT pool_member, INSERT event; COMMIT
     DB-->>S: lock granted
     S->>DB: check seats (0 free) → SeatsUnavailable
     S->>DB: ROLLBACK
 ```
 
-Inside the lock, every time: release expired holds → check state, route, seats → decide → write the
-change and its history event together.
+Inside the lock, every time: re-read the pool and the request → check M1–M4 (same pickup zone, pool
+still MATCHED, seats free, every detour ≤ 2 km) → decide → write the change and its history event
+together. Anything the check needs from outside the transaction (the distance table) is loaded
+**before** the lock, so the lock holder never waits for a second database connection.
 
 Guarantees enforced by the database, independent of application code:
 
@@ -74,10 +76,10 @@ Guarantees enforced by the database, independent of application code:
 |---|---|
 | Seats never exceed capacity | `CHECK (seats_taken BETWEEN 0 AND seat_capacity)` on `pools` |
 | One active pool per vehicle | partial unique index on `pools(vehicle_id)` |
-| One active membership per request | partial unique index on `pool_members(ride_request_id)` |
 | One active request per passenger | partial unique index on `ride_requests(passenger_id)` |
 | No duplicate booking on retry | unique `ride_requests(passenger_id, idempotency_key)` |
-| No join after the pool is finished | conditional seat update checks pool status |
+| No join once the driver has arrived | conditional seat update requires `status = MATCHED` |
+| A request is in at most one pool | partial unique index on `pool_members(ride_request_id) WHERE left_at IS NULL` |
 
 Transactions use READ COMMITTED with a `lock_timeout`, stay short, and make no network calls
 while holding a lock.
@@ -90,28 +92,30 @@ sequenceDiagram
     participant W as Web
     participant A as API
     participant J as Jashim
-    N->>W: request Banani → Mohakhali, 1 seat, SHARED
-    W->>A: POST /rides (Idempotency-Key)
-    A-->>W: REQUESTED, fare ৳40 (locked)
+    N->>W: request Banani → Mohakhali, 1 seat
+    W->>A: POST /rides
+    A-->>W: REQUESTED, estimate ৳75 (solo fare)
     J->>A: GET /driver/requests (polling)
     J->>A: POST /driver/requests/:id/accept
-    A-->>J: pool ACCEPTED on Route 1, 1/3 seats
-    J->>A: arrived → picked up Nusrat → start → next stop → dropped off Nusrat
-    A-->>N: MATCHED → IN_PROGRESS → COMPLETED (pay ৳40 cash)
+    A-->>J: pool MATCHED at Banani, 1/3 seats
+    Note over A: Rafiq (Banani → Gulshan 1) auto-joins: detour 2 km ≤ 2 km
+    J->>A: arrive → start (fares locked) → complete
+    A-->>N: MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED (pay ৳60 cash)
 ```
 
 ## Geography and fare
 
-- Areas and routes are data in the database (seeded), not an external map API. Adjacent stops on a route are 2 km apart (one hop).
-- Fare = ৳30 base + ৳20 × hops, minus 20% for SHARED rides. It is calculated and locked when the request is created, and stored in integer paisa.
+- 14 fixed Dhaka zones and a whole-kilometre distance table (seeded), not an external map API (docs/assumptions.md §3).
+- Fare = (৳30 + km × ৳15) × seats, minus 20% if the pool has 2+ passengers when the trip starts. The solo fare is shown as the estimate and is never exceeded; the final fare is locked at start. Stored in integer paisa.
 
 ## Deployment
 
 ```mermaid
 flowchart LR
     U[User] --> V[Vercel<br/>Next.js]
-    V -->|/api/* rewrite| RN[Render / Koyeb<br/>NestJS container]
+    V -->|/api/* rewrite| RN[Render<br/>NestJS container]
     RN --> NE[(Neon<br/>PostgreSQL)]
 ```
 
-All free tiers. Locally, `docker compose up` runs web, API, PostgreSQL and a test database.
+All free tiers. The API container runs `prisma migrate deploy` and the idempotent seed before starting.
+Locally, `docker compose up` runs web, API and PostgreSQL (plus a test database with `--profile test`).
