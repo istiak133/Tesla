@@ -257,7 +257,7 @@ passengerFare = subtotal − poolDiscount
 | **Pool discount basis** | Counts passengers, not seats. One passenger booking two seats alone gets no discount. |
 | **Estimate** | Shown at request time using the solo fare, the maximum the passenger can pay. |
 | **Final fare** | Calculated and locked when the trip starts. |
-| **Payment** | Cash only; marked paid on `COMPLETED`. A simulated TeslaPay wallet is a future improvement. |
+| **Payment** | Cash only: the passenger pays the final fare to the driver when the trip is `COMPLETED`. A simulated TeslaPay wallet is a future improvement. |
 
 ---
 

@@ -533,3 +533,8 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - One small set of UI pieces (`components/ui.tsx`: Card, Button, StatusBadge, Loading, ErrorNote, EmptyState) keeps every screen consistent. Neutral palette, one accent per status.
 - The API decides everything (fares, whether a request can be accepted and why); the web app only shows it. Types are duplicated in `web/src/lib/types.ts` instead of a shared package (no monorepo tooling, B6).
 - Login page offers the seeded story cast as one-click demo accounts.
+
+
+## D-006: Documentation synced with the implementation (2026-09-29)
+- `docs/system-overview` and `docs/ride-flow` (PDF + SVG) regenerated for the final design: 9 tables, zones and distances, the shared status set, M1–M4 matching, auto-join, fares locked at start. Planned-but-deferred items (seat hold, expiry, no-show, en-route joins) were removed from the diagrams and are listed as next improvements.
+- `docs/architecture.md` updated (module list, lock rules including "load outside data before the lock", request lifecycle, fare, deployment). `docs/assumptions.md` payment wording corrected (cash paid on completion; no separate paid flag).
