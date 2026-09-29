@@ -1,13 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
-import { GeographyRepository, ZoneSummary } from './geography.repository.js';
+import type { ZoneSummary } from './geography.repository.js';
+import { GeographyService } from './geography.service.js';
 
 @Controller('zones')
 export class GeographyController {
-  constructor(private readonly geographyRepository: GeographyRepository) {}
+  constructor(private readonly geographyService: GeographyService) {}
 
   // GET /zones → the list of zones for the pickup and destination pickers
   @Get()
   async listZones(): Promise<ZoneSummary[]> {
-    return this.geographyRepository.listZones();
+    return this.geographyService.listZones();
   }
 }
