@@ -21,3 +21,8 @@ dist/
 coverage/
 *.tsbuildinfo
 basics.md
+
+# Working docs kept locally; the diagrams in docs/ cover them
+docs/architecture.md
+docs/erd.md
+docs/state-machine.md
