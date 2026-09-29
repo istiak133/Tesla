@@ -23,6 +23,7 @@ export function CurrentTrip({ state }: { state: DriverState }) {
     onSuccess: (next) => {
       queryClient.setQueryData(["driver-state"], next);
       queryClient.invalidateQueries({ queryKey: ["driver-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["driver-trips"] });
     },
   });
 

@@ -79,6 +79,16 @@ describe('Trip lifecycle (e2e)', () => {
 
     // Jashim is free again.
     expect((await jashim.post('/driver/offline')).status).toBe(200);
+
+    // And the trip is in his history with both fares.
+    const trips = await jashim.get('/driver/trips');
+    expect(trips.status).toBe(200);
+    expect(trips.body[0]).toMatchObject({
+      status: 'COMPLETED',
+      pickup: 'Banani',
+      totalFarePaisa: 13200, // ৳60 + ৳72
+    });
+    expect(trips.body[0].passengers).toHaveLength(2);
   });
 
   it('a passenger riding alone pays the solo estimate', async () => {
