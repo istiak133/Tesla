@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
+import type { Request } from 'express';
 import { LoggerModule } from 'nestjs-pino';
 import { AuthModule } from './auth/auth.module.js';
+import { clientIp } from './auth/client-ip.js';
 import {
   EnvironmentVariables,
   NodeEnv,
@@ -36,6 +38,8 @@ import { UsersModule } from './users/users.module.js';
       inject: [ConfigService],
       useFactory: (config: ConfigService<EnvironmentVariables, true>) => ({
         throttlers: [{ limit: 100, ttl: 60_000 }],
+        // Count by the real client, not the proxy in front of us (see client-ip.ts).
+        getTracker: (request) => clientIp(request as Request),
         skipIf: () => config.get('NODE_ENV', { infer: true }) === NodeEnv.Test,
       }),
     }),

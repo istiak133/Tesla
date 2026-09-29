@@ -671,3 +671,16 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - R1/R2, depart (there is no last stop), the suggestion and the earnings proof are all re-done.
 - The seed, the story fares, the docs and the diagrams are updated to the new distances.
 
+## D-013: Rate-limit key behind Vercel and Render (2026-09-29, v1.0.1)
+
+**Found by the live stress test:** repeated wrong logins through the public URL did not reach `429`. The limit counted by `req.ip`, derived from `trust proxy` = 2 hops, but the real chain (browser → Vercel → Render's edge → the API) has a changing number of hops and rotating proxy addresses, so most requests looked like a new client. Locally and in CI the limiter is skipped in tests, so this only showed up live.
+
+**Options:**
+- (a) Tune `TRUST_PROXY_HOPS`: fragile, because the hop count is not constant.
+- (b) The first `X-Forwarded-For` entry: the original client as seen by the first proxy; Vercel overwrites the header, so it cannot be faked through the web app.
+- (c) A shared secret between the web proxy and the API, with the API rejecting anything else: stronger, but more moving parts.
+
+**Picked (b)** for the login and sign-up limit (`auth/client-ip.ts`, used as the throttler's `getTracker`), with unit tests. Limitation noted: a direct call to the API URL could send a fake header; the production fix is (c) or a gateway rate limit.
+
+**Verified:** locally through the web proxy, 5 × 401 then 429. Live check after deploy, then released as v1.0.1 (a patch release on `release/v1.0.1`).
+
