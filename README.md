@@ -7,8 +7,7 @@ vehicle without ever exceeding its seats. Built around the PRD's cast: driver **
 three-seat **Bullet**, and passengers **Nusrat**, **Rafiq** and **Shirin**.
 
 > **Status:** MVP complete. En-route pooling on fixed routes, the stop-by-stop trip, fares and the
-> driver/platform money split, with 52 unit and 40 end-to-end tests. Every design decision, with the
-> alternatives and the reason, is in [`decisions.md`](decisions.md).
+> driver/platform money split, with 52 unit and 40 end-to-end tests.
 
 ---
 
@@ -174,7 +173,7 @@ Money is integer paisa everywhere, times are `timestamptz` (UTC, shown in Dhaka 
 | **Prisma** | Drizzle, TypeORM, raw SQL | Typed queries for the pool, member and ride joins, and versioned migrations where the seat CHECKs and partial unique indexes are written by hand; raw SQL only for `SELECT … FOR UPDATE` | If most queries became hand-tuned SQL, a query builder (Drizzle, Kysely) |
 | **Database sessions** | JWT | An httpOnly cookie through the same-origin proxy, revocable at logout, no token handling in the browser | Short-lived JWTs when many services must verify users without a database call, or for native mobile apps |
 | **Next.js + TanStack Query** | React SPA (Vite), server-rendered pages | The `/api` rewrite gives a first-party cookie with no CORS; TanStack Query gives polling, loading and error states | A native app when drivers need background location |
-| **Polling every 3 s** | WebSockets, SSE | Simple, works on free hosting; correctness never depends on it because every action is re-checked under the lock (D-007) | Adaptive polling, then SSE or WebSockets with pub/sub as screens grow |
+| **Polling every 3 s** | WebSockets, SSE | Simple, works on free hosting; correctness never depends on it because every action is re-checked under the lock | Adaptive polling, then SSE or WebSockets with pub/sub as screens grow |
 | **Vitest + Supertest on a real PostgreSQL** | Jest, mocked database | Race conditions and constraints can only be proven against the real database | Not planned |
 | **Tailwind CSS** (styling) | CSS Modules, a component library (MUI, shadcn/ui) | Two small screens with clear states (loading, error, empty, the route line) built fast and consistently, with no design-system weight | A component library once there are many screens, forms and a design team |
 | **class-validator DTOs** (validation) | Zod, Joi | Built into NestJS's `ValidationPipe`: every request body is checked and unknown fields are rejected before a service sees it | Zod if the web and API shared schemas in one monorepo |
@@ -182,7 +181,6 @@ Money is integer paisa everywhere, times are `timestamptz` (UTC, shown in Dhaka 
 | **bcryptjs + throttler** (password, rate limit) | argon2, a gateway rate limit | Pure JavaScript (no native build in Docker); 5 login or sign-up attempts per minute per IP stops guessing | argon2id and a gateway or Redis-backed rate limit when running several API instances |
 | **Free tiers: Vercel, Render, Neon** | Koyeb, Fly.io, Supabase | Free and public; Render runs the same Docker image as local, and Neon is real PostgreSQL, so the row lock and constraints behave in production exactly as in the tests | Paid plans to remove cold starts |
 
-Full reasoning for each: [`decisions.md`](decisions.md).
 
 ## Project structure
 
@@ -392,9 +390,28 @@ On the web, every error is shown next to the action that caused it, and a `401` 
 
 Taking over a seat at the stop where someone else got off is not sharing: both pay their solo fare.
 
-**Who gets the money.** The driver is paid for the work, not from the fares: **৳10 per km** with a passenger on board **+ ৳20 per pickup**. The platform keeps the rest. So a sharing discount never comes out of the driver's pocket: it is paid for by the extra passengers. For the story trip, ৳240 is collected, Jashim earns ৳180 and the platform keeps ৳60. Routes only sell trips that add at most 2 km or 40% to the direct distance, and a unit test checks every trip every route can sell: nobody loses money (see D-010 in [`decisions.md`](decisions.md)).
+**Who gets the money.** The driver is paid for the work, not from the fares: **৳10 per km** with a passenger on board **+ ৳20 per pickup**. The platform keeps the rest. So a sharing discount never comes out of the driver's pocket: it is paid for by the extra passengers. For the story trip, ৳240 is collected, Jashim earns ৳180 and the platform keeps ৳60. Routes only sell trips that add at most 2 km or 40% to the direct distance, and a unit test checks every trip every route can sell: nobody loses money.
 
-Routes, matching rules (R1–R4) and every other assumption: [`docs/assumptions.md`](docs/assumptions.md).
+### Routes and matching rules
+
+Tesla Pool drives three fixed lines, each in both directions (six routes):
+
+| Line | Stops |
+|---|---|
+| Airport Road | Uttara → Banani → Mohakhali → Gulshan 1 → Gulshan 2 → Bashundhara |
+| Mirpur | Uttara → Mirpur 12 → Mirpur 11 → Mirpur 10 → Mirpur 2 → Mirpur 1 → Farmgate → Dhanmondi |
+| Tejgaon | Banani → Mohakhali → Tejgaon → Farmgate → Dhanmondi |
+
+A request joins a trip only if all four hold, checked again under the vehicle lock:
+
+| Rule | Meaning |
+|---|---|
+| **R1** On the route, not too far round | The route passes the pickup, then the destination, and adds at most 2 km or 40% to the direct distance |
+| **R2** Not passed | The car is at, or has not yet reached, the pickup stop |
+| **R3** Seats | Free seats ≥ seats requested |
+| **R4** Active | The trip is still running and the driver is online |
+
+A new request joins the oldest trip that fits; otherwise it waits and drivers see it with the reason it does not fit. The driver picks a route before going online (the system suggests the one with the most riders waiting ahead) and keeps it until the trip ends. Passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting.
 
 ## Concurrency: Bullet's last seat
 
@@ -449,17 +466,17 @@ What we would **not** add without a measured reason: microservices per feature, 
 
 ## Key decisions and trade-offs
 
-| Decision | Trade-off we accepted | Record |
-|---|---|---|
-| En-route pooling on fixed routes: a Tesla picks up anyone ahead on its route until full | Only trips a route carries without going far round are sold (72 of 102 zone pairs); more routes would serve the rest | D-008 |
-| One row lock per vehicle + database guards | Actions on the same car wait in line (fine: one car is in one place); no distributed locks or queues | D-004, `docs/assumptions.md` §9 |
-| Estimate = solo fare; −20% if you shared a hop; locked at drop-off | The final fare is known only at drop-off, but it can only go down | D-008 |
-| Driver paid for the work (৳10/km carried + ৳20/pickup), platform keeps the rest | Platform margin varies per trip; proven never below ৳10 by an exhaustive test | D-010 |
-| The system suggests a route, the driver decides | No automatic dispatch without live GPS | D-009 |
-| No seat hold: a fitting request takes its seat at once | The driver does not approve each join; they keep control through the route, accept, no-show and cancel | D-009 |
-| Polling every 3 s | Some wasted requests; simple and reliable on free hosting | D-007 |
-| Sessions in the database through a same-origin proxy | One database lookup per request; no CORS, revocable sessions | B4 |
-| Pull requests with CI gates and merge commits into a protected `master` | Slower than pushing directly; the history shows every step | D-002 |
+| Decision | Trade-off we accepted |
+|---|---|
+| En-route pooling on fixed routes: a Tesla picks up anyone ahead on its route until full | Only trips a route carries without going far round are sold (72 of 102 zone pairs); more routes would serve the rest |
+| One row lock per vehicle + database guards | Actions on the same car wait in line (fine: one car is in one place); no distributed locks or queues |
+| Estimate = solo fare; −20% if you shared a hop; locked at drop-off | The final fare is known only at drop-off, but it can only go down |
+| Driver paid for the work (৳10/km carried + ৳20/pickup), platform keeps the rest | Platform margin varies per trip; proven never below ৳10 by an exhaustive test |
+| The system suggests a route, the driver decides | No automatic dispatch without live GPS |
+| No seat hold: a fitting request takes its seat at once | The driver does not approve each join; they keep control through the route, accept, no-show and cancel |
+| Polling every 3 s | Some wasted requests; simple and reliable on free hosting |
+| Sessions in the database through a same-origin proxy | One database lookup per request; no CORS, revocable sessions |
+| Pull requests with CI gates and merge commits into a protected `master` | Slower than pushing directly; the history shows every step |
 
 ## Known limitations
 
@@ -500,11 +517,11 @@ Each one, with how we would build it:
 | | Me | Claude |
 |---|---|---|
 | Product and business | What to build, the USP (en-route pooling on fixed routes), the pricing rules and who earns what | Researched options, ran the numbers (e.g. every trip on every route for the fare split), pointed out risks |
-| Architecture and design | The stack, the layered architecture, the data model, the concurrency approach, every rule in [`docs/assumptions.md`](docs/assumptions.md) | Laid out the options with trade-offs and failure cases (race conditions, edge cases), and gave a recommendation |
+| Architecture and design | The stack, the layered architecture, the data model, the concurrency approach, every rule for routes, matching and fares | Laid out the options with trade-offs and failure cases (race conditions, edge cases), and gave a recommendation |
 | How the code is written | The rules the code must follow: controller → service → repository, one row lock per vehicle, database guards, money in integer paisa, tests against a real Postgres, readable code over clever code, one approved approach per feature | Wrote the code, tests, migrations and diagrams within those rules |
-| Delivery | Approved each feature's approach before it was built, had every change explained before committing it, committed and merged through PRs with CI | Explained each change, ran the checks, kept [`decisions.md`](decisions.md) up to date |
+| Delivery | Approved each feature's approach before it was built, had every change explained before committing it, committed and merged through PRs with CI | Explained each change, ran the checks, kept the decision log up to date |
 
-**How each feature went:** I described the problem and my first idea; Claude researched the options; I chose, and the choice was written down in `decisions.md` with the alternatives and the reason (D-001 to D-011); then Claude implemented it and I checked the result (tests, CI, the running app) before committing.
+**How each feature went:** I described the problem and my first idea; Claude researched the options; I chose, and the choice was recorded with the alternatives and the reason; then Claude implemented it and I checked the result (tests, CI, the running app) before committing.
 
 **Decisions where I went against the AI's recommendation**
 
@@ -512,18 +529,18 @@ Each one, with how we would build it:
 |---|---|---|
 | Backend framework | Fastify (lighter, built-in logging and validation) | **NestJS**: its module/controller/service structure enforces the layered architecture I wanted. |
 | ORM | Drizzle | **Prisma**, with raw SQL only for the vehicle lock and the hand-written CHECK constraints. |
-| En-route pooling | Keep same-zone pooling and defer en-route pickups, to meet the deadline | **Build it** (D-008): picking people up along the route until the car is full is the product. It shipped with its own race tests. |
-| Fare split | The first model let the driver keep all cash, so the sharing discount was the driver's loss | **Three-party model** (D-010): I set the rule that the driver must never pay for a discount and the platform must earn. The driver is paid for the work, and a test over every possible trip proves nobody loses money. |
+| En-route pooling | Keep same-zone pooling and defer en-route pickups, to meet the deadline | **Build it**: picking people up along the route until the car is full is the product. It shipped with its own race tests. |
+| Fare split | The first model let the driver keep all cash, so the sharing discount was the driver's loss | **Three-party model**: I set the rule that the driver must never pay for a discount and the platform must earn. The driver is paid for the work, and a test over every possible trip proves nobody loses money. |
 
 **One suggestion accepted, one rejected** (the PRD's format)
 
 - **Accepted: "one vehicle = one line".** Every change to a vehicle's seats or trip locks that vehicle's row, backed by CHECK constraints and partial unique indexes. I chose it over Redis locks, queues and serializable transactions because the database guarantees correctness even if the code has a bug, it needs no extra infrastructure, and it can be tested with real races (20 riders for the last seat, "the car leaves" against "a rider joins at that stop").
-- **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead (D-009).
+- **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **What I checked myself**
 - Every claim is backed by a test: 52 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
-- A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release (D-011).
+- A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - No secrets, keys or personal data were given to the AI. Demo accounts use the reserved `.test` domain.
 
 ## Demo video
