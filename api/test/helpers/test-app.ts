@@ -90,3 +90,35 @@ export async function zoneId(
     .zone.findUniqueOrThrow({ where: { code } });
   return zone.id;
 }
+
+/** A second driver and car for matching tests, placed at a zone on a route. */
+export async function createDriver(
+  app: NestExpressApplication,
+  driver: { name: string; email: string; zoneCode: string; routeCode: string },
+) {
+  const prisma = app.get(PrismaService);
+  const passwordHash = await hashPassword(DEMO_PASSWORD);
+  const user = await prisma.user.create({
+    data: {
+      name: driver.name,
+      email: driver.email,
+      passwordHash,
+      role: 'DRIVER',
+    },
+  });
+  const route = await prisma.route.findUniqueOrThrow({
+    where: { code: driver.routeCode },
+  });
+  const zone = await prisma.zone.findUniqueOrThrow({
+    where: { code: driver.zoneCode },
+  });
+  await prisma.vehicle.create({
+    data: {
+      driverId: user.id,
+      name: `${driver.name}'s car`,
+      seatCapacity: 3,
+      routeId: route.id,
+      currentZoneId: zone.id,
+    },
+  });
+}
