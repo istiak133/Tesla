@@ -14,13 +14,17 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard.js';
 import { Role } from '../generated/prisma/client.js';
 import { DriverService } from './driver.service.js';
+import { TripService } from './trip.service.js';
 
 // Driver endpoints. Every route needs a session and the DRIVER role.
 @Controller('driver')
 @UseGuards(SessionAuthGuard, RolesGuard)
 @Roles(Role.DRIVER)
 export class DriverController {
-  constructor(private readonly driverService: DriverService) {}
+  constructor(
+    private readonly driverService: DriverService,
+    private readonly tripService: TripService,
+  ) {}
 
   // GET /driver/pool → my vehicle and current trip
   @Get('pool')
@@ -57,5 +61,31 @@ export class DriverController {
     @Param('id', ParseUUIDPipe) rideId: string,
   ) {
     return this.driverService.acceptRequest(user.id, rideId);
+  }
+
+  // Trip lifecycle: MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED (409 for any other order)
+  @Post('pool/arrive')
+  @HttpCode(200)
+  arrive(@CurrentUser() user: PublicUser) {
+    return this.tripService.arrive(user.id);
+  }
+
+  @Post('pool/start')
+  @HttpCode(200)
+  start(@CurrentUser() user: PublicUser) {
+    return this.tripService.start(user.id);
+  }
+
+  @Post('pool/complete')
+  @HttpCode(200)
+  complete(@CurrentUser() user: PublicUser) {
+    return this.tripService.complete(user.id);
+  }
+
+  // Before the start only: passengers go back to waiting for another driver.
+  @Post('pool/cancel')
+  @HttpCode(200)
+  cancelTrip(@CurrentUser() user: PublicUser) {
+    return this.tripService.cancelTrip(user.id);
   }
 }
