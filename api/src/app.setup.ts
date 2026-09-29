@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import type { EnvironmentVariables } from './config/env.validation.js';
+import { RideErrorFilter } from './rides/ride-error.filter.js';
 
 /**
  * Everything the app needs besides its modules.
@@ -26,4 +27,6 @@ export function configureApp(app: NestExpressApplication): void {
       transform: true, // turn payloads into DTO class instances with real types
     }),
   );
+  // Business errors from the ride services become 4xx responses with a code.
+  app.useGlobalFilters(new RideErrorFilter());
 }

@@ -51,4 +51,14 @@ export async function seedCast(prisma: PrismaClient): Promise<void> {
       create: { ...person, passwordHash },
     });
   }
+
+  // Jashim's three-seat Bullet.
+  const jashim = await prisma.user.findUniqueOrThrow({
+    where: { email: 'jashim@teslapool.test' },
+  });
+  await prisma.vehicle.upsert({
+    where: { driverId: jashim.id },
+    update: { name: 'Bullet', seatCapacity: 3 },
+    create: { driverId: jashim.id, name: 'Bullet', seatCapacity: 3 },
+  });
 }

@@ -30,7 +30,11 @@ explain afterwards exactly what happened.
 - Environment validation at startup (the app refuses to start with bad config)
 - Same-origin `/api` proxy from the web app to the API
 - One-command local run with Docker Compose, plus CI on every pull request
-- Ride, pooling, driver and passenger features *(coming)*
+- Ride requests with a solo fare estimate; automatic join into the oldest compatible open pool
+- Drivers go online, see waiting requests (with the reason if they cannot take one) and accept them
+- Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with eight riders racing for the last seat
+- Passenger cancellation before the trip starts; an empty pool closes itself; full status history per ride
+- Trip progress (arrive, start with fares locked, complete) and the web screens *(coming)*
 
 ## Screenshots
 
@@ -174,6 +178,17 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | POST | `/auth/logout` | End the session and clear the cookie |
 | GET | `/auth/me` | The logged-in user |
 | GET | `/zones` | The 14 zones for pickup and destination |
+| POST | `/rides` | Passenger: request a ride `{pickupZoneId, dropoffZoneId, seats}`; joins an open pool at once if one fits |
+| GET | `/rides/current` | Passenger: the active ride (driver, co-riders' first names, fare, history) |
+| GET | `/rides` | Passenger: ride history |
+| GET | `/rides/:id` | Passenger: one of my rides (403 for someone else's) |
+| POST | `/rides/:id/cancel` | Passenger: cancel before the trip starts |
+| POST | `/driver/online`, `/driver/offline` | Driver: availability (offline refused during a trip) |
+| GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |
+| POST | `/driver/requests/:id/accept` | Driver: accept (creates the pool or adds to the open one) |
+| GET | `/driver/pool` | Driver: vehicle and current trip with its passengers |
+
+Business errors return `{ statusCode, code, message }`, e.g. `409 SEATS_UNAVAILABLE`, `403 NOT_YOUR_RIDE`.
 
 Through the web app every path is prefixed with `/api` (e.g. `/api/auth/login`).
 

@@ -56,17 +56,17 @@ Details and reasoning for each entry are further down in this file.
 | Email uniqueness | Unique index on `lower(email)` | App lower-cases + unique + `CHECK (email = lower(email))` | Implemented |
 | Merge flow | PR + manual merge | PR + auto-merge on green CI (`api`, `web`, `docker` required) | Implemented |
 | Geography | 3 routes, ordered stops, 2 km per hop | 14 zones + symmetric km distance table (from `docs/assumptions.md`) | Implemented (`zones`, `zone_distances`, seed, `GET /zones`) |
-| Matching rule | Same route and direction, pickup ahead of the vehicle | M1–M4: same pickup zone, pool open, seats free, every member's detour ≤ 2 km (drop-offs nearest first) | Planned |
-| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the oldest compatible open pool; the driver can also accept compatible waiting requests | Planned |
+| Matching rule | Same route and direction, pickup ahead of the vehicle | M1–M4: same pickup zone, pool open, seats free, every member's detour ≤ 2 km (drop-offs nearest first) | Implemented (`PoolingService.assertCanJoin`) |
+| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the oldest compatible open pool (best effort: under contention the ride keeps waiting); the driver can also accept compatible waiting requests | Implemented |
 | Joins after start | Allowed from stops ahead (option C) | Not in the MVP: a pool is closed once STARTED | Deferred |
 | Status model | Separate pool and per-passenger states (IN_PROGRESS, per-passenger drop-off) | One shared set: REQUESTED → MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED, + CANCELLED; driver actions apply to the whole pool | Planned |
 | Fare | ৳30 + ৳20 per hop, passenger picks SHARED (−20%) or SOLO, locked at request | (৳30 + km × ৳15) × seats; −20% if the pool has 2+ passengers at STARTED; estimate = solo price (never exceeded); locked at STARTED | In progress (fare rules and detour rules implemented as tested pure functions; applied at STARTED with pooling) |
-| Ride types | SHARED / SOLO chosen by the passenger | No ride type; every ride can be pooled | Planned |
-| Money storage | Integer paisa | Integer paisa (unchanged) | In progress |
-| Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status | Planned |
+| Ride types | SHARED / SOLO chosen by the passenger | No ride type; every ride can be pooled | Implemented |
+| Money storage | Integer paisa | Integer paisa (unchanged) | Implemented |
+| Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status. Rule added: inside the lock only the transaction's connection is used (found by the race test) | Implemented (tested: 8 riders racing for the last seat, 10/10 runs) |
 | Idempotency key (double tap) | E6 + G11 | Kept as a design, not built for the MVP | Deferred |
 | Seat hold, request expiry, no-show | E1, Y, E7 | Kept as designs, not built for the MVP | Deferred |
-| Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger before STARTED; empty pool auto-cancels; driver before start → riders back to REQUESTED | Planned |
+| Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger before STARTED; empty pool auto-cancels; driver before start → riders back to REQUESTED | Passenger part implemented; driver cancel planned |
 | Payment | Cash only | Cash only (unchanged) | Planned |
 | Hosting | Vercel + Render/Koyeb + Neon | Unchanged (re-check free tiers at deploy time) | Planned |
 
@@ -518,3 +518,10 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 **Superseded:** routes and hops (B1), option C, option Y and driver confirmation of every join, SHARED/SOLO ride types (P3.12 revision), Fare A (locked at request), per-passenger IN_PROGRESS and drop-off (E4).
 
 **Consequences:** Less code and fewer states; the PRD's last-seat race happens at auto-join time and is still protected by the vehicle lock and CHECK constraint. Deferred items are documented as next improvements.
+
+
+## D-004: Pooling implementation notes (2026-09-29)
+- The distance table is loaded **before** taking the vehicle lock. Inside the lock only the transaction is used. The race test first failed with 503s because the lock holder waited for a second pool connection that the waiting transactions were holding (the G7/G8 trap in practice).
+- Auto-join is best effort: if the vehicle is busy (lock timeout), the ride stays REQUESTED and is shown to drivers instead of returning an error for a ride that was already created.
+- The distance table is read fresh each time (182 rows) rather than cached in memory, so re-seeding zones can never leave a stale copy.
+- History uses one `ride_events` table (with an optional `pool_id`), not separate request/pool event tables: every driver action is recorded per passenger, which is what "explain what happened to my ride" needs.

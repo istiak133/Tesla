@@ -4,8 +4,8 @@
 // they live in migration SQL and are documented in docs/erd.md.
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
   // Set explicitly instead of letting Prisma guess from tsconfig.json,
   // so the generated imports are the same on every machine and in Docker.
   moduleFormat        = "esm"
@@ -30,7 +30,10 @@ model User {
   role         Role
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  sessions Session[]
+  sessions   Session[]
+  vehicle    Vehicle?
+  rides      RideRequest[]
+  rideEvents RideEvent[]
 
   @@map("users")
 }
@@ -57,6 +60,9 @@ model Zone {
 
   distancesFrom ZoneDistance[] @relation("DistanceFrom")
   distancesTo   ZoneDistance[] @relation("DistanceTo")
+  pickupPools   Pool[]
+  ridePickups   RideRequest[]  @relation("RidePickup")
+  rideDropoffs  RideRequest[]  @relation("RideDropoff")
 
   @@map("zones")
 }
@@ -73,4 +79,113 @@ model ZoneDistance {
 
   @@id([fromZoneId, toZoneId])
   @@map("zone_distances")
+}
+
+// One status set for both ride requests and pools (docs/assumptions.md §5).
+// A pool is never REQUESTED; a request is REQUESTED until it gets a seat.
+enum RideStatus {
+  REQUESTED
+  MATCHED
+  DRIVER_ARRIVED
+  STARTED
+  COMPLETED
+  CANCELLED
+}
+
+// A driver's vehicle. The row is also the lock for every seat change (see PoolingRepository).
+model Vehicle {
+  id           String   @id @default(uuid()) @db.Uuid
+  driverId     String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
+  name         String
+  seatCapacity Int      @map("seat_capacity")
+  isOnline     Boolean  @default(false) @map("is_online")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  driver User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  pools  Pool[]
+
+  @@map("vehicles")
+}
+
+// One trip of one vehicle, carrying one or more ride requests.
+model Pool {
+  id           String     @id @default(uuid()) @db.Uuid
+  vehicleId    String     @map("vehicle_id") @db.Uuid
+  pickupZoneId String     @map("pickup_zone_id") @db.Uuid
+  status       RideStatus @default(MATCHED)
+  // Copied from the vehicle when the pool is created, so the CHECK can compare two columns.
+  seatCapacity Int        @map("seat_capacity")
+  seatsTaken   Int        @default(0) @map("seats_taken")
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  startedAt    DateTime?  @map("started_at") @db.Timestamptz(6)
+  endedAt      DateTime?  @map("ended_at") @db.Timestamptz(6)
+
+  vehicle    Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  pickupZone Zone         @relation(fields: [pickupZoneId], references: [id])
+  members    PoolMember[]
+  events     RideEvent[]
+
+  @@index([status, pickupZoneId])
+  @@map("pools")
+}
+
+model RideRequest {
+  id                 String     @id @default(uuid()) @db.Uuid
+  passengerId        String     @map("passenger_id") @db.Uuid
+  pickupZoneId       String     @map("pickup_zone_id") @db.Uuid
+  dropoffZoneId      String     @map("dropoff_zone_id") @db.Uuid
+  seats              Int
+  status             RideStatus @default(REQUESTED)
+  // Direct distance and the solo fare, fixed when the ride is requested.
+  distanceKm         Int        @map("distance_km")
+  estimatedFarePaisa Int        @map("estimated_fare_paisa")
+  // Set when the trip starts (pool discount decided then).
+  finalFarePaisa     Int?       @map("final_fare_paisa")
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  passenger   User         @relation(fields: [passengerId], references: [id], onDelete: Cascade)
+  pickupZone  Zone         @relation("RidePickup", fields: [pickupZoneId], references: [id])
+  dropoffZone Zone         @relation("RideDropoff", fields: [dropoffZoneId], references: [id])
+  memberships PoolMember[]
+  events      RideEvent[]
+
+  @@index([status, createdAt])
+  @@index([passengerId, createdAt])
+  @@map("ride_requests")
+}
+
+// Which request is (or was) in which pool. leftAt is null while the passenger holds seats.
+model PoolMember {
+  id            String    @id @default(uuid()) @db.Uuid
+  poolId        String    @map("pool_id") @db.Uuid
+  rideRequestId String    @map("ride_request_id") @db.Uuid
+  seats         Int
+  joinedAt      DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+  leftAt        DateTime? @map("left_at") @db.Timestamptz(6)
+
+  pool        Pool        @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  rideRequest RideRequest @relation(fields: [rideRequestId], references: [id], onDelete: Cascade)
+
+  @@index([poolId])
+  @@map("pool_members")
+}
+
+// Append-only history: every status change of every ride request.
+model RideEvent {
+  id            String      @id @default(uuid()) @db.Uuid
+  rideRequestId String      @map("ride_request_id") @db.Uuid
+  poolId        String?     @map("pool_id") @db.Uuid
+  fromStatus    RideStatus? @map("from_status")
+  toStatus      RideStatus  @map("to_status")
+  actorUserId   String?     @map("actor_user_id") @db.Uuid // null = the system
+  reason        String
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rideRequest RideRequest @relation(fields: [rideRequestId], references: [id], onDelete: Cascade)
+  pool        Pool?       @relation(fields: [poolId], references: [id], onDelete: SetNull)
+  actor       User?       @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([rideRequestId, createdAt])
+  @@map("ride_events")
 }

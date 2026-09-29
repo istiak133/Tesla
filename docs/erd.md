@@ -1,7 +1,5 @@
 # Database Design (ERD)
 
-> Ride, pool and membership tables below are updated when those features are built (see the Decision Status table in `decisions.md`).
-
 PostgreSQL. Money is stored as integer paisa. Times are `timestamptz` (UTC). Primary keys are UUIDs.
 Columns marked *(planned)* are added by their own migration when that feature is built.
 
@@ -9,15 +7,15 @@ Columns marked *(planned)* are added by their own migration when that feature is
 erDiagram
     users ||--o{ sessions : has
     users ||--o| vehicles : drives
-    users ||--o{ ride_requests : makes
-    zones ||--o{ zone_distances : "distance from / to"
-    zones ||--o{ ride_requests : "pickup / dropoff"
-    vehicles ||--o{ pools : runs
+    users ||--o{ ride_requests : requests
+    zones ||--o{ zone_distances : "from / to"
+    zones ||--o{ ride_requests : "pickup / drop-off"
     zones ||--o{ pools : "pickup zone"
+    vehicles ||--o{ pools : runs
     pools ||--o{ pool_members : contains
-    ride_requests ||--o{ pool_members : "joins over time"
-    ride_requests ||--o{ ride_request_events : history
-    pools ||--o{ pool_events : history
+    ride_requests ||--o{ pool_members : "holds seats in"
+    ride_requests ||--o{ ride_events : history
+    pools |o--o{ ride_events : "context"
 
     users {
         uuid id PK
@@ -25,90 +23,66 @@ erDiagram
         text email "unique, stored lower case"
         text password_hash
         enum role "PASSENGER | DRIVER"
-        timestamptz created_at
     }
     sessions {
         uuid id PK
         uuid user_id FK
-        text token_hash "unique"
+        text token_hash "unique (SHA-256)"
         timestamptz expires_at
-        timestamptz created_at
     }
     vehicles {
         uuid id PK
         uuid driver_id FK "unique: one vehicle per driver"
-        text name
+        text name "Bullet"
         int seat_capacity "CHECK > 0"
         bool is_online
-        timestamptz created_at
     }
     zones {
         uuid id PK
         text code "unique, e.g. BAN"
-        text name "unique, e.g. Banani"
+        text name "unique"
     }
     zone_distances {
         uuid from_zone_id PK, FK
         uuid to_zone_id PK, FK
-        int km "CHECK > 0, CHECK from <> to"
-    }
-    ride_requests {
-        uuid id PK
-        uuid passenger_id FK
-        uuid pickup_area_id FK
-        uuid dropoff_area_id FK
-        int seats "CHECK >= 1"
-        enum ride_type "SHARED | SOLO"
-        enum status
-        text idempotency_key
-        int fare_paisa "locked at creation"
-        timestamptz expires_at "planned"
-        timestamptz created_at
-        timestamptz updated_at
+        int km "CHECK > 0, from <> to"
     }
     pools {
         uuid id PK
         uuid vehicle_id FK
-        uuid route_id FK
-        enum direction "FORWARD | REVERSE"
-        bool is_shared
-        enum status
+        uuid pickup_zone_id FK
+        enum status "MATCHED..COMPLETED | CANCELLED"
         int seat_capacity "copied from vehicle"
         int seats_taken "CHECK 0..seat_capacity"
-        int current_stop_index
-        timestamptz created_at
         timestamptz started_at
         timestamptz ended_at
+    }
+    ride_requests {
+        uuid id PK
+        uuid passenger_id FK
+        uuid pickup_zone_id FK
+        uuid dropoff_zone_id FK
+        int seats "CHECK 1..3"
+        enum status
+        int distance_km
+        int estimated_fare_paisa "solo fare"
+        int final_fare_paisa "locked at STARTED"
     }
     pool_members {
         uuid id PK
         uuid pool_id FK
         uuid ride_request_id FK
         int seats
-        enum status "HELD | ACTIVE | REJECTED | RELEASED | ENDED"
-        enum end_reason
-        int pickup_stop_index
-        int dropoff_stop_index
-        timestamptz hold_expires_at "planned"
-        timestamptz created_at
-        timestamptz updated_at
+        timestamptz joined_at
+        timestamptz left_at "null while holding seats"
     }
-    ride_request_events {
+    ride_events {
         uuid id PK
         uuid ride_request_id FK
         uuid pool_id FK "nullable"
         enum from_status
         enum to_status
-        uuid actor_user_id FK "nullable = system"
-        text reason
-        timestamptz created_at
-    }
-    pool_events {
-        uuid id PK
-        uuid pool_id FK
-        enum from_status
-        enum to_status
-        uuid actor_user_id FK "nullable = system"
+        uuid actor_user_id FK "null = system"
         text reason
         timestamptz created_at
     }
@@ -118,37 +92,30 @@ erDiagram
 
 | Table | Why it exists |
 |---|---|
-| `users` | Passengers and drivers in one table with a `role`; both sign in the same way. |
-| `sessions` | Server-side login sessions; only a SHA-256 hash of the token is stored; logout deletes the row. |
-| `vehicles` | A driver's vehicle (Bullet, 3 seats). Also the **lock row** for all seat and pool changes. `is_online` lives here so availability changes under the same lock. |
-| `zones` | The 14 predefined Dhaka zones (docs/assumptions.md §3.1). |
-| `zone_distances` | Whole-kilometre road distance for every ordered pair of different zones, stored in both directions so a lookup is one row. |
-| `ride_requests` | One passenger's request and its lifecycle. The fare is calculated and locked here at creation. |
-| `pools` | One trip of one vehicle along one route and direction. Holds the seat counter that the CHECK constraint protects. |
-| `pool_members` | Which request is (or was) in which pool, with the seats taken and pickup/dropoff stops. A request can have several rows over time (e.g. rejected, then accepted elsewhere). |
-| `ride_request_events`, `pool_events` | Append-only status history, used to explain exactly what happened. Two tables instead of one polymorphic table, so each has a real foreign key. |
+| `users` | Passengers and drivers in one table with a `role`. |
+| `sessions` | Server-side login sessions; only a SHA-256 hash of the token is stored. |
+| `vehicles` | A driver's vehicle (Bullet, 3 seats). Its row is the **lock** for every seat change. `is_online` lives here so going online/offline uses the same lock. |
+| `zones`, `zone_distances` | The 14 Dhaka zones and whole-km distances in both directions. |
+| `pools` | One trip of one vehicle from one pickup zone. Holds the seat counter the CHECK protects. |
+| `ride_requests` | One passenger's request: zones, seats, status, the solo estimate and the final fare. |
+| `pool_members` | Pool membership: which request holds how many seats in which pool (`left_at` set on cancel). |
+| `ride_events` | Append-only status history of every request (actor, reason, time). |
 
-Not included on purpose: payments (cash only), ratings (optional in the PRD).
+Not included on purpose: payments (cash only), ratings.
 
 ## Constraints and indexes
 
 | Object | Definition | Protects |
 |---|---|---|
-| CHECK | `pools.seats_taken BETWEEN 0 AND seat_capacity` | I1 capacity |
-| CHECK | `vehicles.seat_capacity > 0`, `ride_requests.seats >= 1` | valid data |
-| CHECK | `ride_requests.pickup_area_id <> dropoff_area_id` | E5 |
-| Unique + CHECK | `users.email` unique, `CHECK (email = lower(email))`; the app lower-cases emails | G12 duplicate sign-up |
+| CHECK | `pools.seats_taken BETWEEN 0 AND seat_capacity` | capacity is never exceeded |
+| CHECK | `pools.status <> 'REQUESTED'` | valid pool states |
+| CHECK | `ride_requests.seats BETWEEN 1 AND 3`, `pickup_zone_id <> dropoff_zone_id`, fares ≥ 0 | valid requests |
+| CHECK | `vehicles.seat_capacity > 0`, `zone_distances.km > 0`, `from <> to` | valid data |
+| Unique + CHECK | `users.email` unique, `CHECK (email = lower(email))` | one account per email |
 | Unique | `vehicles.driver_id` | one vehicle per driver |
-| Unique | `sessions.token_hash` | session lookup |
-| Unique | `ride_requests(passenger_id, idempotency_key)` | E6 duplicate submit |
-| Partial unique | `ride_requests(passenger_id) WHERE status IN (REQUESTED, HELD, MATCHED, IN_PROGRESS)` | I5 one active request |
-| Partial unique | `pools(vehicle_id) WHERE status IN (ACCEPTED, DRIVER_ARRIVED, STARTED)` | I4 one active pool |
-| Partial unique | `pool_members(ride_request_id) WHERE status IN (HELD, ACTIVE)` | I2 one active membership |
-| CHECK | `zone_distances.km > 0`, `from_zone_id <> to_zone_id` | valid distances |
-| Unique | `zones.code`, `zones.name` | one row per zone |
-| Index | `ride_requests(status, created_at)` | driver's waiting-request list |
-| Index | `pool_members(pool_id, status)` | pool passenger list |
-| Index | `ride_request_events(ride_request_id, created_at)`, `pool_events(pool_id, created_at)` | history timelines |
+| Partial unique | `pools(vehicle_id) WHERE status IN (MATCHED, DRIVER_ARRIVED, STARTED)` | one active pool per vehicle |
+| Partial unique | `ride_requests(passenger_id) WHERE status IN (REQUESTED, MATCHED, DRIVER_ARRIVED, STARTED)` | one active ride per passenger |
+| Partial unique | `pool_members(ride_request_id) WHERE left_at IS NULL` | a request is in at most one pool |
+| Index | `ride_requests(status, created_at)`, `pools(status, pickup_zone_id)`, `ride_events(ride_request_id, created_at)` | driver list, auto-join lookup, history |
 
-CHECK constraints and partial unique indexes are not expressible in `schema.prisma`; they are written
-in migration SQL and listed here so the schema is fully documented.
+CHECK constraints and partial unique indexes are written by hand in migration SQL (Prisma's schema language cannot express them) and listed here so the schema is fully documented.
