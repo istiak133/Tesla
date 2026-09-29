@@ -525,3 +525,11 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - Auto-join is best effort: if the vehicle is busy (lock timeout), the ride stays REQUESTED and is shown to drivers instead of returning an error for a ride that was already created.
 - The distance table is read fresh each time (182 rows) rather than cached in memory, so re-seeding zones can never leave a stale copy.
 - History uses one `ride_events` table (with an optional `pool_id`), not separate request/pool event tables: every driver action is recorded per passenger, which is what "explain what happened to my ride" needs.
+
+
+## D-005: Web app (2026-09-29)
+- Client components with TanStack Query: every screen polls its data every 3 s (`refetchInterval`), and loading, error and empty states come from the query state. No WebSockets (see docs/assumptions.md §9).
+- All requests go to `/api/...` on the web app's own origin (Next.js rewrite), so the session cookie is first-party.
+- One small set of UI pieces (`components/ui.tsx`: Card, Button, StatusBadge, Loading, ErrorNote, EmptyState) keeps every screen consistent. Neutral palette, one accent per status.
+- The API decides everything (fares, whether a request can be accepted and why); the web app only shows it. Types are duplicated in `web/src/lib/types.ts` instead of a shared package (no monorepo tooling, B6).
+- Login page offers the seeded story cast as one-click demo accounts.
