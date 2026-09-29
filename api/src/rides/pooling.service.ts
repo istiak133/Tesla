@@ -126,7 +126,7 @@ export class PoolingService {
     });
     if (claimed.count === 0) {
       // Say why, so the driver's screen is clear: the passenger cancelled, or another
-      // car was faster.
+      // driver accepted first (first accept wins, D-020).
       const now = await tx.rideRequest.findUniqueOrThrow({
         where: { id: ride.id },
       });
@@ -134,7 +134,7 @@ export class PoolingService {
         'ALREADY_TAKEN',
         now.status === RideStatus.CANCELLED
           ? 'The passenger cancelled this request'
-          : 'This request is no longer waiting',
+          : 'Another driver took this request',
       );
     }
 

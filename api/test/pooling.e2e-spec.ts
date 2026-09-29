@@ -102,10 +102,14 @@ describe('Ride requests and pooling (e2e)', () => {
       .send({ pickupZoneId: BAN, dropoffZoneId: UTT, seats: 1 });
     expect(shirinRide.body.status).toBe('REQUESTED');
 
-    const list = await jashim.get('/driver/requests');
-    expect(list.body[0]).toMatchObject({
-      canAccept: false,
-      reason: 'Not on this route in this direction',
+    // Not listed for Bullet (D-020); accepting it anyway is refused with the reason.
+    expect((await jashim.get('/driver/requests')).body).toEqual([]);
+    const accept = await jashim.post(
+      `/driver/requests/${shirinRide.body.id}/accept`,
+    );
+    expect(accept.body).toMatchObject({
+      code: 'NOT_COMPATIBLE',
+      message: 'Not on this route in this direction',
     });
   });
 
@@ -182,13 +186,12 @@ describe('Ride requests and pooling (e2e)', () => {
       expect(statuses).toEqual(['MATCHED', 'REQUESTED']);
       const pool = await prisma.pool.findFirstOrThrow();
       expect(pool.seatsTaken).toBe(3);
-      const waiting = await jashim.get('/driver/requests');
-      expect(waiting.body).toEqual([
-        expect.objectContaining({
-          canAccept: false,
-          reason: '1 seat(s) short',
-        }),
-      ]);
+      // The one who lost keeps waiting (still REQUESTED); Bullet is full, so it is not
+      // in Jashim's list any more, and another car can take it (D-020).
+      expect((await jashim.get('/driver/requests')).body).toEqual([]);
+      expect(
+        await prisma.rideRequest.count({ where: { status: 'REQUESTED' } }),
+      ).toBe(1);
     }
   });
 
@@ -270,14 +273,14 @@ describe('Ride requests and pooling (e2e)', () => {
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
     expect(ride.body.status).toBe('REQUESTED');
 
-    const list = await jashim.get('/driver/requests');
-    expect(list.body[0]).toMatchObject({
-      canAccept: false,
-      reason: 'The car has already passed Banani',
-    });
+    // Not listed for Bullet (D-020); accepting it anyway is refused with the reason.
+    expect((await jashim.get('/driver/requests')).body).toEqual([]);
     const accept = await jashim.post(`/driver/requests/${ride.body.id}/accept`);
     expect(accept.status).toBe(409);
-    expect(accept.body.code).toBe('NOT_COMPATIBLE');
+    expect(accept.body).toMatchObject({
+      code: 'NOT_COMPATIBLE',
+      message: 'The car has already passed Banani',
+    });
   });
 
   it('leaving a stop and a passenger joining at that stop never overlap', async () => {
