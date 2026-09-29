@@ -44,6 +44,12 @@ export function CurrentRide({ ride }: { ride: Ride }) {
                 ? "Final fare · pay in cash"
                 : "Estimate · 20% off if you share any hop"}
             </p>
+            {ride.duesPaisa > 0 && (
+              <p className="mt-1 text-xs font-medium text-amber-800">
+                + {taka(ride.duesPaisa)} from an earlier late cancel, paid with
+                this fare
+              </p>
+            )}
           </div>
         </div>
 
@@ -102,13 +108,21 @@ export function CurrentRide({ ride }: { ride: Ride }) {
 
         {cancel.isError && <ErrorNote message={cancel.error.message} />}
         {CANCELLABLE.includes(ride.status) && (
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {ride.cancelNowFeePaisa > 0 && (
+              <p className="text-xs text-stone-500">
+                The car is coming to your stop: cancelling now costs{" "}
+                {taka(ride.cancelNowFeePaisa)}, paid with your next ride.
+              </p>
+            )}
             <Button
               variant="danger"
               loading={cancel.isPending}
               onClick={() => cancel.mutate()}
             >
-              Cancel ride
+              {ride.cancelNowFeePaisa > 0
+                ? `Cancel ride · ${taka(ride.cancelNowFeePaisa)} fee`
+                : "Cancel ride"}
             </Button>
           </div>
         )}

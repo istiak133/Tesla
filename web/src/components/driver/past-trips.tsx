@@ -14,11 +14,16 @@ export function PastTrips() {
   });
 
   // Totals over the trips listed: what the driver keeps and what is owed to the platform.
+  // Late-cancel fees (D-018) are the driver's, paid by the platform, so they lower what the
+  // driver owes; earlier riders' fees collected in cash belong to the platform, so they raise it.
   let earned = 0;
   let fees = 0;
   for (const trip of trips.data ?? []) {
-    earned += trip.driverEarningsPaisa ?? 0;
-    fees += trip.platformFeePaisa ?? 0;
+    earned += (trip.driverEarningsPaisa ?? 0) + trip.cancellationFeesPaisa;
+    fees +=
+      (trip.platformFeePaisa ?? 0) +
+      trip.duesCollectedPaisa -
+      trip.cancellationFeesPaisa;
   }
 
   return (
@@ -27,8 +32,10 @@ export function PastTrips() {
       action={
         earned > 0 ? (
           <p className="text-sm text-stone-600">
-            Earned <span className="font-medium">{taka(earned)}</span> ·
-            platform fee owed {taka(fees)}
+            Earned <span className="font-medium">{taka(earned)}</span> ·{" "}
+            {fees >= 0
+              ? `platform fee owed ${taka(fees)}`
+              : `the platform owes you ${taka(-fees)}`}
           </p>
         ) : undefined
       }
@@ -58,15 +65,34 @@ export function PastTrips() {
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  {trip.driverEarningsPaisa !== null && (
+                  {(trip.driverEarningsPaisa !== null ||
+                    trip.cancellationFeesPaisa > 0) && (
                     <div className="text-right">
                       <p className="font-medium">
-                        You earned {taka(trip.driverEarningsPaisa)}
+                        You earned{" "}
+                        {taka(
+                          (trip.driverEarningsPaisa ?? 0) +
+                            trip.cancellationFeesPaisa,
+                        )}
                       </p>
-                      <p className="text-xs text-stone-500">
-                        {taka(trip.collectedPaisa ?? 0)} cash · platform fee{" "}
-                        {taka(trip.platformFeePaisa ?? 0)}
-                      </p>
+                      {trip.driverEarningsPaisa !== null && (
+                        <p className="text-xs text-stone-500">
+                          {taka(trip.collectedPaisa ?? 0)} cash · platform fee{" "}
+                          {taka(trip.platformFeePaisa ?? 0)}
+                        </p>
+                      )}
+                      {trip.cancellationFeesPaisa > 0 && (
+                        <p className="text-xs text-emerald-700">
+                          incl. {taka(trip.cancellationFeesPaisa)} late-cancel
+                          fee ({trip.lateCancels.join(", ")})
+                        </p>
+                      )}
+                      {trip.duesCollectedPaisa > 0 && (
+                        <p className="text-xs text-amber-800">
+                          + {taka(trip.duesCollectedPaisa)} cancel fees
+                          collected for the platform
+                        </p>
+                      )}
                     </div>
                   )}
                   <StatusBadge status={trip.status} />
