@@ -147,6 +147,27 @@ export class RidesRepository {
     });
   }
 
+  /** Finished trips of a vehicle (completed or cancelled), newest first. */
+  async listPastPools(vehicleId: string) {
+    return this.prisma.pool.findMany({
+      where: {
+        vehicleId,
+        status: { in: [RideStatus.COMPLETED, RideStatus.CANCELLED] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      include: {
+        pickupZone: true,
+        members: {
+          orderBy: { joinedAt: 'asc' },
+          include: {
+            rideRequest: { include: { passenger: true, dropoffZone: true } },
+          },
+        },
+      },
+    });
+  }
+
   async findActiveMembership(rideRequestId: string) {
     return this.prisma.poolMember.findFirst({
       where: { rideRequestId, leftAt: null },

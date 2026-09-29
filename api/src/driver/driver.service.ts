@@ -171,6 +171,38 @@ export class DriverService {
     return this.getCurrentPool(driverId);
   }
 
+  /** Past trips: who rode, where to, and what each paid. */
+  async listPastTrips(driverId: string) {
+    const vehicle = await this.getVehicle(driverId);
+    const pools = await this.ridesRepository.listPastPools(vehicle.id);
+
+    return pools.map((pool) => {
+      // Passengers who were still in the pool at the end (cancelled riders have left it).
+      const riders = pool.members.filter(
+        (member) => member.rideRequest.status === RideStatus.COMPLETED,
+      );
+      let totalFarePaisa = 0;
+      for (const rider of riders) {
+        totalFarePaisa += rider.rideRequest.finalFarePaisa ?? 0;
+      }
+
+      return {
+        id: pool.id,
+        status: pool.status,
+        pickup: pool.pickupZone.name,
+        startedAt: pool.startedAt,
+        endedAt: pool.endedAt,
+        totalFarePaisa,
+        passengers: riders.map((rider) => ({
+          name: firstName(rider.rideRequest.passenger.name),
+          dropoff: rider.rideRequest.dropoffZone.name,
+          seats: rider.seats,
+          finalFarePaisa: rider.rideRequest.finalFarePaisa,
+        })),
+      };
+    });
+  }
+
   /** The driver's current trip with its passengers, or null. */
   async getCurrentPool(driverId: string) {
     const vehicle = await this.getVehicle(driverId);

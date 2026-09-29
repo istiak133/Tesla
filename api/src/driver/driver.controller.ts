@@ -32,6 +32,12 @@ export class DriverController {
     return this.driverService.getCurrentPool(user.id);
   }
 
+  // GET /driver/trips → my past trips (completed or cancelled)
+  @Get('trips')
+  pastTrips(@CurrentUser() user: PublicUser) {
+    return this.driverService.listPastTrips(user.id);
+  }
+
   // POST /driver/online and /driver/offline
   @Post('online')
   @HttpCode(200)
