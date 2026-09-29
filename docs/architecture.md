@@ -5,6 +5,9 @@ passengers can share one vehicle without ever exceeding its seats.
 
 ## System overview
 
+Final architecture (hand-drawn style): [`final_architecture_design.pdf`](final_architecture_design.pdf) ([PNG](final_architecture_design.png)).
+Full layered diagram with the numbered happy path: [`architecture-diagram.pdf`](architecture-diagram.pdf) (also [PNG](architecture-diagram.png) and [SVG](architecture-diagram.svg)).
+
 ```mermaid
 flowchart LR
     B[Browser] -->|HTTPS, same origin| W[Next.js web app<br/>App Router · TanStack Query]
@@ -24,7 +27,8 @@ increasingly block cross-site cookies, so Next.js rewrites `/api/*` to the API. 
 first-party and no CORS configuration is needed.
 
 **Deliberately not included:** microservices, message queues, Redis, WebSockets. PostgreSQL row locks
-and constraints solve the MVP's consistency problems; polling is enough for live status. What changes at larger scale is
+and constraints solve the MVP's consistency problems; polling every 3 s is enough for live status.
+At scale, adaptive polling and then WebSockets or SSE would replace it (decisions.md D-007). What changes at larger scale is
 covered in the scaling notes (planned: `docs/scaling.md`).
 
 ## API layers
@@ -58,7 +62,7 @@ sequenceDiagram
     S->>DB: BEGIN; SELECT vehicle FOR UPDATE
     Note over S,DB: waits for Rafiq's lock
     R->>DB: re-read pool; check M1–M4 (1 seat free)
-    R->>DB: UPDATE pools SET seats_taken += 1 WHERE status = MATCHED AND room left
+    R->>DB: UPDATE pools SET seats_taken += seats WHERE status = MATCHED AND room left
     R->>DB: INSERT pool_member, INSERT event; COMMIT
     DB-->>S: lock granted
     S->>DB: check seats (0 free) → SeatsUnavailable
