@@ -12,6 +12,7 @@ import { buildLoggerParams } from './config/logger.config.js';
 import { DatabaseModule } from './database/database.module.js';
 import { GeographyModule } from './geography/geography.module.js';
 import { HealthModule } from './health/health.module.js';
+import { RidesModule } from './rides/rides.module.js';
 import { UsersModule } from './users/users.module.js';
 
 @Module({
@@ -43,6 +44,7 @@ import { UsersModule } from './users/users.module.js';
     UsersModule,
     AuthModule,
     GeographyModule,
+    RidesModule,
   ],
 })
 export class AppModule {}
