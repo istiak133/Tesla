@@ -109,25 +109,21 @@ describe('Matching by the car’s position (e2e)', () => {
     expect(accept.body.code).toBe('NOT_COMPATIBLE');
   });
 
-  it('A: the route must pass the car, and a car off its route cannot start a trip', async () => {
+  it('A: the route must pass the car: moving off it clears the route, and only a route through the car can be chosen', async () => {
     const jashim = await loginAs(app, 'jashim@teslapool.test');
-    const nusrat = await loginAs(app, 'nusrat@teslapool.test');
     await jashim.post('/driver/online').expect(200);
-    await nusrat
-      .post('/rides')
-      .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 });
 
-    // Jashim says he is at Mirpur 10, which his route Uttara → Bashundhara does not pass.
-    await jashim.post('/driver/offline').expect(200);
-    await jashim.post('/driver/location').send({ zoneId: M10 }).expect(200);
-    await jashim.post('/driver/online').expect(200);
-    expect((await jashim.get('/driver/requests')).body[0]).toMatchObject({
-      canAccept: false,
-      reason: 'Your car is not on this route: set your location first',
-    });
+    // Jashim says he is at Mirpur 10, which his route Uttara → Bashundhara does not pass (D-019).
+    const moved = await jashim
+      .post('/driver/location')
+      .send({ zoneId: M10 })
+      .expect(200);
+    expect(moved.body.vehicle).toMatchObject({ route: null, isOnline: false });
+    const online = await jashim.post('/driver/online');
+    expect(online.status).toBe(409);
+    expect(online.body.code).toBe('ROUTE_REQUIRED');
 
     // Choosing a route that does not pass Mirpur 10 is refused; one that does is fine.
-    await jashim.post('/driver/offline').expect(200);
     const wrong = await jashim
       .post('/driver/route')
       .send({ routeId: await routeId('BAN-DHN') });

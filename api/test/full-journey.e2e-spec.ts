@@ -172,22 +172,20 @@ describe('A full trip, end to end (e2e)', () => {
     expect((await jashim.post('/driver/offline')).status).toBe(409);
     expect((await jashim.post('/driver/pool/cancel')).status).toBe(409);
 
-    // ---------- Mohakhali: Nusrat gets off, Shirin gets on, Karim takes the free seat ----------
+    // ---------- Mohakhali: Nusrat gets off, and her seat goes straight to Karim (D-017) ----------
     await jashim.post('/driver/pool/arrive').expect(200);
     expect((await jashim.post('/driver/pool/depart')).status).toBe(409); // people to handle here
     await jashim
       .post(`/driver/pool/passengers/${nusratRide.body.id}/dropoff`)
       .expect(200);
+    const karimNow = (await karim.get('/rides/current')).body.ride;
+    expect(karimNow.status).toBe('DRIVER_ARRIVED'); // seated, and the car is at his stop
+    expect(karimNow.history.map((e: { reason: string }) => e.reason)).toContain(
+      'A seat came free in a Tesla on the way: joined automatically',
+    );
     await jashim
       .post(`/driver/pool/passengers/${shirinRide.body.id}/pickup`)
       .expect(200);
-    const karimAccepted = await jashim.post(
-      `/driver/requests/${karimSecond.body.id}/accept`,
-    );
-    expect(karimAccepted.status).toBe(200);
-    expect((await karim.get('/rides/current')).body.ride.status).toBe(
-      'DRIVER_ARRIVED', // the car is already at his stop
-    );
     // …but Karim is not there.
     const noShow = await jashim.post(
       `/driver/pool/passengers/${karimSecond.body.id}/no-show`,

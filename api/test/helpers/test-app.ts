@@ -80,7 +80,9 @@ export async function loginAs(app: NestExpressApplication, email: string) {
     .post('/auth/login')
     .send({ role, email, password: DEMO_PASSWORD });
   if (response.status !== 200) {
-    throw new Error(`Login failed for ${email}: ${response.status}`);
+    throw new Error(
+      `Login failed for ${email}: ${response.status} ${JSON.stringify(response.body)}`,
+    );
   }
   return agent;
 }
