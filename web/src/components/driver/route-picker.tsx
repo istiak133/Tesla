@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { useRefreshInterval } from "@/lib/live";
 import type { DriverState, Route, RouteSuggestions, Zone } from "@/lib/types";
 import { RouteLine } from "../route-line";
 import { Button, ErrorNote, inputClass } from "../ui";
@@ -12,6 +13,7 @@ import { Button, ErrorNote, inputClass } from "../ui";
  * car's location and the riders waiting; the driver decides. Changeable only between trips.
  */
 export function RoutePicker({ state }: { state: DriverState }) {
+  const refetchInterval = useRefreshInterval(5000);
   const queryClient = useQueryClient();
   const locked = state.pool !== null;
 
@@ -28,7 +30,7 @@ export function RoutePicker({ state }: { state: DriverState }) {
   const suggestions = useQuery({
     queryKey: ["route-suggestions"],
     queryFn: () => api<RouteSuggestions>("/driver/routes"),
-    refetchInterval: 5000,
+    refetchInterval,
     enabled: !locked, // during a trip the route is fixed
   });
 

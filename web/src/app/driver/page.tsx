@@ -8,19 +8,21 @@ import { RoutePicker } from "@/components/driver/route-picker";
 import { WaitingRequests } from "@/components/driver/waiting-requests";
 import { Button, ErrorNote, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
+import { useRefreshInterval } from "@/lib/live";
 import type { DriverState } from "@/lib/types";
 
-// Driver home: route, availability, the current trip and the waiting requests (refreshed every 3 seconds).
+// Driver home: route, availability, the current trip and the waiting requests (live updates; polling every 3 s if the stream is down).
 export default function DriverPage() {
   return <AppShell role="DRIVER">{() => <DriverHome />}</AppShell>;
 }
 
 function DriverHome() {
+  const refetchInterval = useRefreshInterval(3000);
   const queryClient = useQueryClient();
   const state = useQuery({
     queryKey: ["driver-state"],
     queryFn: () => api<DriverState>("/driver/pool"),
-    refetchInterval: 3000,
+    refetchInterval,
   });
 
   const toggle = useMutation({

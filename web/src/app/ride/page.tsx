@@ -7,18 +7,20 @@ import { RequestForm } from "@/components/ride/request-form";
 import { RideHistory } from "@/components/ride/ride-history";
 import { ErrorNote, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
+import { useRefreshInterval } from "@/lib/live";
 import type { Ride } from "@/lib/types";
 
-// Passenger home: the active ride (refreshed every 3 seconds) or the request form.
+// Passenger home: the active ride (live updates; polling every 3 s if the stream is down) or the request form.
 export default function RidePage() {
   return <AppShell role="PASSENGER">{() => <PassengerHome />}</AppShell>;
 }
 
 function PassengerHome() {
+  const refetchInterval = useRefreshInterval(3000);
   const current = useQuery({
     queryKey: ["current-ride"],
     queryFn: () => api<{ ride: Ride | null }>("/rides/current"),
-    refetchInterval: 3000,
+    refetchInterval,
   });
 
   return (

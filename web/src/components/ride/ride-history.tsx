@@ -2,15 +2,17 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useRefreshInterval } from "@/lib/live";
 import { dhakaTime, taka } from "@/lib/format";
 import type { RideSummary } from "@/lib/types";
 import { Card, EmptyState, ErrorNote, Loading, StatusBadge } from "../ui";
 
 export function RideHistory() {
+  const refetchInterval = useRefreshInterval(10000);
   const history = useQuery({
     queryKey: ["ride-history"],
     queryFn: () => api<RideSummary[]>("/rides"),
-    refetchInterval: 10000,
+    refetchInterval,
   });
 
   return (
