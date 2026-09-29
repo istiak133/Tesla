@@ -6,7 +6,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 - 🌐 **Live demo:** https://tesla-pool-one.vercel.app (one-click demo accounts on the login page)
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
-- 🧪 **Quality:** 55 unit and 40 end-to-end tests against PostgreSQL, CI on every pull request
+- 🧪 **Quality:** 67 unit and 45 end-to-end tests against PostgreSQL, CI on every pull request
 
 ---
 
@@ -30,13 +30,14 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 **🧑 Passenger**
 - Sign-up, login and logout, with a server-side session in an httpOnly cookie
 - Request a ride with a solo fare estimate; only trips a route serves are offered
-- Automatic join into the oldest Tesla that has not passed the pickup
+- Automatic join into the **nearest** Tesla on its way (the one that reaches the pickup in the fewest km)
 - Live status with the route drawn and the car on it
 - Cancel until picked up; full ride history with every status change
 
 **🚗 Driver**
 - A **suggested route** from where the car is and where riders are waiting (one tap to take it, or pick another)
-- Go online, see waiting requests with the reason when one cannot be taken (e.g. "The car has already passed Banani"), and accept
+- Go online and see waiting requests **nearest pickup first**, each with its distance ("pickup 3 km ahead") or the reason it cannot be taken (e.g. "Behind your car"); requests waiting 5+ minutes are lifted to the top
+- Accept: a new trip starts **where the car is**, and the car drives stop by stop to the pickup
 - Drive stop by stop: arrive → picked up / drop off / no-show → leave for the next stop
 - Cancel before the first pickup (passengers go back to waiting)
 - Past trips with cash collected, own earnings and the platform fee
@@ -306,6 +307,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | Users cannot read or change other users' rides; roles cannot use each other's endpoints | `api/test/pooling.e2e-spec.ts` |
 | Cancellation rules, no-shows, the driver's trip cancel, and a cancel racing a trip cancel | `api/test/trip.e2e-spec.ts` |
 | Nobody loses money on any trip any route can sell (about 25,000 cases) | `api/src/fares/earnings.spec.ts` |
+| Matching by the car's position: new trips start at the car, pickups behind are refused, the nearest car wins auto-join over an older trip, the list is nearest first with aging | `api/src/pooling/matching.spec.ts`, `api/test/matching.e2e-spec.ts` |
 | Everything together, from sign-up to the driver's earnings | `api/test/full-journey.e2e-spec.ts` |
 
 ## 🔑 Demo credentials
@@ -356,10 +358,10 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | POST | `/rides/:id/cancel` | Passenger: cancel until picked up |
 | GET | `/driver/routes` | Driver: every route ranked from the car's zone, with riders waiting ahead and the suggested one |
 | POST | `/driver/location` | Driver: where the car is `{zoneId}` (before a trip; stops update it after that) |
-| POST | `/driver/route` | Driver: choose the route `{routeId}` (only between trips) |
+| POST | `/driver/route` | Driver: choose the route `{routeId}` (only between trips; it must pass the car's zone) |
 | POST | `/driver/online`, `/driver/offline` | Driver: availability (a route is required; offline refused during a trip) |
-| GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |
-| POST | `/driver/requests/:id/accept` | Driver: accept (starts a trip on the route, or adds to the current one) |
+| GET | `/driver/requests` | Driver: waiting requests, best first, with `pickupKmAhead`, `canAccept` and a reason |
+| POST | `/driver/requests/:id/accept` | Driver: accept (starts a trip at the car's stop on its route, or adds to the current one) |
 | GET | `/driver/pool` | Driver: vehicle, route and current trip with its stops and passengers |
 | GET | `/driver/trips` | Driver: past trips with passengers, cash collected, driver earnings and platform fee |
 | POST | `/driver/pool/arrive`, `/driver/pool/depart` | Driver: arrive at the current stop; leave for the next one (409 while someone still waits here) |
@@ -397,7 +399,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 
 ### 🚘 Sharing is automatic
 - 🔁 Every ride can be shared: there is no "solo" option to choose.
-- ⚡ On request, the system puts the passenger into the **oldest** trip that fits (right route, stop not passed, seats free).
+- ⚡ On request, the system puts the passenger into the **nearest** car on its way that fits (right route, stop not passed, seats free); on a tie, the older trip.
 - ⏳ If nothing fits, the request waits and drivers see it with the reason.
 
 ### 🧮 The three formulas
@@ -466,9 +468,17 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | **R3** Seats | Free seats ≥ seats requested |
 | **R4** Active | The trip is still running and the driver is online |
 
-- ⚡ **Auto-join:** a new request joins the oldest trip that fits. If that car stays busy for more than 3 s, the request simply waits.
-- ⏳ **Waiting:** otherwise the request waits, and drivers see it with the reason it does not fit.
-- 🧭 **Route choice:** the driver picks a route before going online (the system suggests the one with the most riders waiting ahead) and keeps it until the trip ends.
+**📍 Where the car is**
+- On a trip: the trip's current stop (where it stands, or the next stop it drives to).
+- Between trips: the car's zone on its route (set by the driver once, then updated at every stop).
+- **Approach km** = how far the car drives along its route to reach a pickup. A pickup behind the car has no approach km: a car never drives backwards.
+
+**🎯 How a request finds a car**
+- ⚡ **Auto-join, nearest car first:** among the trips already running on routes that pass the pickup, the request tries the car with the **fewest approach km** first (the older trip on a tie), and takes the seat under that car's lock. If that car stays busy for more than 3 s, the request simply waits.
+- 🚗 **A new trip starts where the car is:** when an idle driver accepts, the trip begins at the car's own stop and the car drives stop by stop to the pickup, able to take others on the way. A pickup behind the car is refused ("Behind your car"), and so is a car that is not on its route ("set your location first").
+- 🧭 **Route choice:** the driver picks a route before going online (the system suggests the one with the most riders waiting ahead); it must pass the car's zone, and it stays fixed until the trip ends.
+- 📋 **The driver's list, best first:** requests the driver can take and that have waited 5+ minutes (oldest first, so nobody waits for ever), then the others they can take by nearest pickup, then those they cannot take, each with the reason.
+- ⏳ **Waiting:** a request that fits no running trip waits, and drivers see it.
 - ❌ **Cancelling:** passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting.
 
 ## 🔒 Concurrency: Bullet's last seat
@@ -540,6 +550,7 @@ flowchart LR
 | Estimate = solo fare; −20% if you shared a hop; locked at drop-off | The final fare is known only at drop-off, but it can only go down |
 | Driver paid for the work (৳10/km carried + ৳20/pickup), platform keeps the rest | Platform margin varies per trip; proven never below ৳10 by an exhaustive test |
 | The system suggests a route, the driver decides | No automatic dispatch without live GPS |
+| Matching by the car's position: nearest car first, trips start at the car, 5-minute aging on the driver's list | Greedy, one request at a time; idle cars are reached through the driver's list, not offered automatically |
 | No seat hold: a fitting request takes its seat at once | The driver does not approve each join; they keep control through the route, accept, no-show and cancel |
 | Polling every 3 s | Some wasted requests; simple and reliable on free hosting |
 | Sessions in the database through a same-origin proxy | One database lookup per request; no CORS, revocable sessions |
@@ -548,6 +559,7 @@ flowchart LR
 ## 🚧 Known limitations
 
 - 🗺️ **No live GPS or maps.** Dhaka is 14 zones and 6 fixed routes; the car's position is the stop the driver reports. 30 of the 102 zone pairs on a route are not sold because the route goes too far round.
+- 🎯 **Matching is greedy and only among running trips.** A request is matched the moment it arrives, to the nearest car already on a trip; an idle car nearby only sees it in its list. Approach km is measured from the stop the car stands at or drives to, not from a live GPS position. The empty drive to the first pickup is not paid.
 - 🪑 **Seats are counted per trip, not per stretch.** Anyone not yet dropped off holds their seat, so a join that would fit later on the route can be refused until someone gets off.
 - ⏱️ **Driver pay has no time component.** No per-minute rate for traffic, no pay for driving to the first pickup or empty stretches, no surge or incentives.
 - 💵 **Cash only.** The platform fee is recorded per trip, not collected.
@@ -565,6 +577,7 @@ flowchart LR
 
 | Improvement | How |
 |---|---|
+| **Batch matching and offers to idle cars** | Collect requests for a few seconds, then match all waiting requests to all cars at once with a score of pickup wait (approach km), in-car detour and empty km, instead of one request at a time. Offer the best request to an idle nearby car, which accepts within a few seconds or the offer moves to the next car. The seat is still taken under each car's lock. |
 | **Push updates instead of polling** | An SSE endpoint per screen (`/rides/current/stream`, `/driver/stream`). After each committed change the API publishes an event (PostgreSQL `LISTEN/NOTIFY` for one instance, a pub/sub channel for several) and the stream sends the new state. Keep adaptive polling as the fallback: fast during a trip, slow when idle, paused in background tabs. |
 | **Idempotency keys** | The client sends an `Idempotency-Key` header on `POST /rides` and driver actions. A new `idempotency_keys` table (user, key, request hash, response, time) with a unique index on (user, key); the response is stored in the same transaction as the change, and a retry with the same key gets the stored response. Keys expire after 24 h. |
 | **Request expiry** | An `expires_at` on each request (e.g. 10 minutes) and a new `EXPIRED` status. Expired requests are skipped and marked under the lock at auto-join and accept, plus a small scheduled sweep for the rest. |
@@ -609,7 +622,7 @@ flowchart LR
 - ❌ **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **🔎 What I checked myself**
-- 🧪 The core rules are backed by tests: 55 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- 🧪 The core rules are backed by tests: 67 unit and 45 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - 🤖 CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - 🕵️ A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - 🌐 A live stress test through the public URL (63 checks, including the races over the real network) found that the login rate limit did not count the real client behind Vercel and Render. It was fixed and re-checked live (v1.0.1).

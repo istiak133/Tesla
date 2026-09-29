@@ -162,8 +162,10 @@ flowchart TD
 
 ### 4.4 Automatic Join and Driver Accept
 
-- **Automatic join:** a new request joins the **oldest** active pool that passes R1 – R4, so older trips fill first. If the vehicle is busy (lock wait over 3 s), the request just keeps waiting.
-- **Driver accept:** a driver with no active pool starts a new one on their route; the car heads to this passenger's stop. A driver with an active pool can accept only requests that pass R1 – R4. The waiting list shows the reason for every request that does not fit.
+- **Where the car is:** on a trip, the pool's current stop; between trips, the stop of `vehicles.current_zone` on the chosen route. **Approach km** is the route distance from that stop to the pickup, only for pickups at or ahead of the car.
+- **Automatic join:** a new request joins the **nearest** active pool that passes R1 – R4 (fewest approach km; on a tie, the older trip). A car that does not fit under its lock (full, passed) is skipped for the next nearest; if a vehicle is busy (lock wait over 3 s), or none fits, the request keeps waiting. Only cars already on a trip are considered.
+- **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool can accept only requests that pass R1 – R4.
+- **Waiting list order:** takeable requests waiting 5 minutes or more first (oldest first, so no one waits for ever), then the other takeable ones by nearest pickup, then the ones the driver cannot take, each with its reason. Every item shows how far ahead its pickup is.
 
 ### 4.5 Constraints
 
@@ -370,7 +372,7 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-03 | Tesla Pool drives six fixed routes (three lines, both directions); a ride needs a route that passes the pickup, then the destination. | [3.3](#33-routes) |
 | A-04 | A passenger can join a Tesla already on its way if it has not passed their pickup (R1 – R4). | [4.1](#41-eligibility) |
 | A-05 | Seats are freed at drop-off; the seat count covers everyone not yet dropped off. | [4.1](#41-eligibility) |
-| A-06 | A request auto-joins the oldest compatible pool; a driver can also accept compatible waiting requests. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-06 | A request auto-joins the nearest compatible running trip; a new trip starts where the car is; the driver's list is nearest first with 5-minute aging. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-07 | One active pool per driver; one active request per passenger; the route changes only between trips. | [4.5](#45-constraints) |
 | A-08 | `MATCHED` covers both "accepted" and "joined a pool". | [5.4](#54-deviation-from-the-brief) |
 | A-09 | Every passenger status change is recorded in an audit table. | [5.5](#55-audit-trail) |
