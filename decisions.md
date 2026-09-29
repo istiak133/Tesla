@@ -744,3 +744,70 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
   - Rahim's car at Banani wins auto-join over Jashim's older trip 12 km away
   - the list order is Nusrat (0 km), Rafiq (3 km), Shirin (behind)
 - All earlier tests still pass: 67 unit, 45 e2e.
+
+---
+
+# Accounts
+
+## D-015: Separate sign-up and login for passengers and drivers (2026-09-29)
+
+**Context (his request).** Until now only passengers could sign up, with just name, email and password; drivers existed only in the seed. He wants both types of user, chosen first with two buttons on both login and sign-up, and the details real ride apps ask for. Drivers also give an identity document, NID **or** passport, their choice.
+
+**Decision:**
+- **Account type first.** The login and sign-up pages start with two cards, Passenger and Driver. The form appears after the choice, with a "Change" link.
+- **Two sign-up endpoints:**
+  - `POST /auth/signup/passenger`: name, email, mobile, password, present and permanent address.
+  - `POST /auth/signup/driver`: the same, plus `idType` (NID | PASSPORT) and `idNumber`, `licenceNumber`, `vehicleName` and `plateNumber`.
+  - The endpoint decides the role; a `role` field in the body is refused (whitelisting `ValidationPipe`).
+- **Where the data lives:**
+  - Contact details on `users`: `phone` unique, plus both addresses.
+  - Driver-only data in a new `driver_profiles` table (1:1 with the user): document type and number, licence. The `users` table does not fill up with columns that are empty for every passenger.
+  - The plate on `vehicles`.
+  - The driver's user, profile and car are one nested insert, so one transaction.
+  - The car gets 3 seats, no route and no location. The driver sets those on the driver page, as before.
+- **One stored form for each value** (`auth/identity.ts`, applied by `@Transform` before validation):
+  - Phones: `01712-345678`, `+880 1712 345678` → `+8801712345678`.
+  - Documents and licences: no spaces or dashes, in capitals.
+  - Plates: single spaces, in capitals.
+  - Names and addresses: trimmed.
+  - Without this, "the same phone written two ways" would pass the unique index.
+- **Formats checked twice:**
+  - In the DTO, with a message for people.
+  - Again by CHECK constraints in the migration: phone format, NID 10/13/17 digits or passport letters + digits matching the chosen type, licence and plate in capitals.
+- **Duplicates:**
+  - Email, phone, (document type, number), licence and plate are unique.
+  - The service checks them first to give a precise `409 ALREADY_REGISTERED` with the `field`.
+  - Two sign-ups racing past the check are still stopped by the unique indexes (generic 409).
+- **Login with the type:**
+  - `role` is required.
+  - Wrong email or password → the same `401 Invalid email or password` as before.
+  - Right password but the other type → `401 WRONG_ACCOUNT_TYPE` ("This is a driver account: choose Driver to log in"), and no session is created. This only tells the type to someone who already has the password, so it gives nothing away. The page offers "Log in as driver instead" in one tap.
+- **Old accounts:** the new columns are nullable, so accounts created before this (for example on the live database) keep working. The demo cast is seeded with full details.
+
+**Options considered:**
+- One `/auth/signup` with a `role` field: fewer endpoints, but the client picks its own role and every field becomes "required only if driver". Refused.
+- Driver fields as nullable columns on `users`: simpler, but mostly empty columns and no clean place for later verification status. Refused for `driver_profiles`.
+- Login without the type, with the type used only to pick the home page: fewer errors, but it ignores the button he asked for. The type is checked, and the switch is offered.
+
+**Planned next (his list, not built now):**
+- **Phone OTP:** a 6-digit SMS code, stored hashed, 5-minute expiry, 5 tries, then `phone_verified_at`. Needed before requesting rides or going online.
+- **JWT:** keep cookie sessions for the web. For mobile apps, a 15-minute access JWT plus a rotating refresh token stored hashed, so revocation keeps working.
+- **Google OAuth:** OpenID Connect ID token → an `auth_identities` (provider, subject) link by verified email. Then ask only for what Google does not give (phone, address, the driver's documents).
+- **Document verification:** `verification_status` on `driver_profiles`, document photos in object storage, an admin screen. Going online is allowed only when approved.
+
+**UI touch-up (same change, his request: simple and classy):**
+- A cream page (`#f5efe3`) with warm paper cards and warm grey (stone) text.
+- A near-black header with 🛺 and the name set in a serif, with a thin gold line under it.
+- A quiet footer on every page. Mobile checked at 390 px.
+
+**Tests:**
+- Unit, `identity.spec.ts` (5): every phone form, operator digits, NID and passport formats, licences and plates, tidy text.
+- Integration, `auth.e2e-spec.ts` (13):
+  - passenger sign-up with every field stored normalised
+  - a duplicate email or phone written differently is refused
+  - bad input is refused, and role or driver fields cannot be sent to the passenger endpoint
+  - driver sign-up with NID, then with passport
+  - a document number must fit the chosen type
+  - a duplicate document, licence or plate is refused with nothing half made, and the index holds without the service
+  - a new driver sets location and route, goes online and accepts a real ride
+  - login with the right type; the same answer for a wrong password and an unknown email; `WRONG_ACCOUNT_TYPE` only after the password, with no cookie; the type is required
