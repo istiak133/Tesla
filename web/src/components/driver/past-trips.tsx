@@ -29,12 +29,12 @@ export function PastTrips() {
             <li key={trip.id} className="py-3 text-sm">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="font-medium">From {trip.pickup}</p>
+                  <p className="font-medium">{trip.route}</p>
                   <p className="text-xs text-zinc-500">
                     {trip.endedAt ? dhakaTime(trip.endedAt) : "—"} ·{" "}
                     {trip.passengers.length > 0
                       ? trip.passengers
-                          .map((p) => `${p.name} → ${p.dropoff}`)
+                          .map((p) => `${p.name} ${p.pickup} → ${p.dropoff}`)
                           .join(", ")
                       : "No passengers"}
                   </p>
