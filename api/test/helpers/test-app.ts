@@ -36,7 +36,57 @@ export async function resetDatabase(app: NestExpressApplication) {
   }
 
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "sessions", "users", "zone_distances", "zones" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "ride_events", "pool_members", "pools", "ride_requests", "vehicles", "sessions", "users", "zone_distances", "zones" RESTART IDENTITY CASCADE',
   );
   await seedZones(prisma);
+}
+
+// ---------- helpers for ride tests ----------
+
+import request from 'supertest';
+import { hashPassword } from '../../src/auth/password.js';
+import { DEMO_PASSWORD, seedCast } from '../../src/seed/seed-data.js';
+
+export async function seedStoryCast(app: NestExpressApplication) {
+  await seedCast(app.get(PrismaService));
+}
+
+/** Extra passengers for concurrency tests (all use the demo password). */
+export async function createPassengers(
+  app: NestExpressApplication,
+  count: number,
+): Promise<string[]> {
+  const prisma = app.get(PrismaService);
+  const passwordHash = await hashPassword(DEMO_PASSWORD);
+  const emails: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    const email = `rider${i}@teslapool.test`;
+    await prisma.user.create({
+      data: { name: `Rider ${i}`, email, passwordHash, role: 'PASSENGER' },
+    });
+    emails.push(email);
+  }
+  return emails;
+}
+
+/** A supertest agent logged in as this user (keeps the session cookie). */
+export async function loginAs(app: NestExpressApplication, email: string) {
+  const agent = request.agent(app.getHttpServer());
+  const response = await agent
+    .post('/auth/login')
+    .send({ email, password: DEMO_PASSWORD });
+  if (response.status !== 200) {
+    throw new Error(`Login failed for ${email}: ${response.status}`);
+  }
+  return agent;
+}
+
+export async function zoneId(
+  app: NestExpressApplication,
+  code: string,
+): Promise<string> {
+  const zone = await app
+    .get(PrismaService)
+    .zone.findUniqueOrThrow({ where: { code } });
+  return zone.id;
 }
