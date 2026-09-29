@@ -5,6 +5,7 @@ import {
   type DistanceLookup,
 } from '../geography/geography.repository.js';
 import { Pool, RideRequest, RideStatus } from '../generated/prisma/client.js';
+import { rankJoinCandidates } from '../pooling/matching.js';
 import { joinProblem, tripStops } from '../pooling/route-plan.js';
 import { RideError } from './ride.errors.js';
 import {
@@ -37,13 +38,15 @@ export class PoolingService {
   }
 
   /**
-   * Automatic join (docs/assumptions.md §4.4): put a new request into the oldest
-   * active pool whose car has not passed the pickup yet. Returns true if it joined one.
+   * Automatic join (docs/assumptions.md §4.4, D-014): put a new request into the active
+   * trip whose car reaches the pickup soonest (fewest km along its route; oldest trip on
+   * a tie). Returns true if it joined one.
    */
   async tryAutoJoin(ride: RideRequest): Promise<boolean> {
-    // Found without a lock; every condition is checked again under the lock.
-    const candidates = await this.ridesRepository.listJoinablePools(
-      ride.pickupZoneId,
+    // Found and ranked without a lock; every condition is checked again under the lock.
+    const candidates = rankJoinCandidates(
+      await this.ridesRepository.listJoinablePools(ride.pickupZoneId),
+      ride,
     );
 
     for (const candidate of candidates) {
@@ -52,7 +55,7 @@ export class PoolingService {
           candidate.vehicleId,
           async (tx) => {
             const pool = await tx.pool.findUniqueOrThrow({
-              where: { id: candidate.id },
+              where: { id: candidate.poolId },
             });
             const current = await tx.rideRequest.findUniqueOrThrow({
               where: { id: ride.id },

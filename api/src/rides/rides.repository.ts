@@ -129,17 +129,31 @@ export class RidesRepository {
 
   /**
    * Pools a new request might join: active, driver online, and the route stops at the
-   * pickup zone. Oldest first. The full rules (R1–R4) are checked again under the lock.
+   * pickup zone, with their route's stops so the nearest car can be found.
+   * The full rules (R1–R4) are checked again under the lock.
    */
   async listJoinablePools(pickupZoneId: string) {
-    return this.prisma.pool.findMany({
+    const pools = await this.prisma.pool.findMany({
       where: {
         status: { in: ACTIVE_POOL_STATUSES },
         vehicle: { isOnline: true },
         route: { stops: { some: { zoneId: pickupZoneId } } },
       },
       orderBy: { createdAt: 'asc' },
+      include: { route: { include: ROUTE_STOPS } },
     });
+    return pools.map((pool) => ({
+      poolId: pool.id,
+      vehicleId: pool.vehicleId,
+      createdAt: pool.createdAt,
+      currentStop: pool.currentStop,
+      stops: pool.route.stops.map((stop) => ({
+        position: stop.position,
+        zoneId: stop.zoneId,
+        name: stop.zone.name,
+        kmFromStart: stop.kmFromStart,
+      })),
+    }));
   }
 
   /** The vehicle's current pool with its route and every member (for the driver screen). */

@@ -57,7 +57,7 @@ Details and reasoning for each entry are further down in this file.
 | Merge flow | PR + manual merge | PR + auto-merge on green CI (`api`, `web`, `docker` required) | Implemented |
 | Geography | 3 routes, ordered stops, 2 km per hop → 14 zones + km table only (D-003) | 14 zones + symmetric km table **and** 3 fixed lines driven both ways = 6 routes with ordered stops (D-008) | Implemented (`routes`, `route_stops`, seed, `GET /zones`, `GET /routes`) |
 | Matching rule | Same route and direction, pickup ahead of the vehicle → M1–M4 same pickup zone + detour ≤ 2 km (D-003) | R1–R4: on the pool's route in its direction, the car has not passed the pickup, seats free, pool active (D-008) | Implemented (`pooling/route-plan.ts`, checked under the lock in `PoolingService.joinUnderLock`) |
-| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the oldest compatible open pool (best effort: under contention the ride keeps waiting); the driver can also accept compatible waiting requests | Implemented |
+| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the nearest compatible running trip, older trip on a tie (D-014; was the oldest pool); best effort: under contention the ride keeps waiting; the driver can also accept compatible waiting requests, and a new trip starts where the car is | Implemented |
 | Joins after start | Allowed from stops ahead (option C) → deferred (D-003) | Allowed from any stop ahead until the seats are full; seats freed at drop-off (D-008) | Implemented (tested: join on the way, passed stop refused, depart vs join race) |
 | Status model | Per-passenger states → one shared set for the whole pool (D-003) | Same status names, per passenger: MATCHED → DRIVER_ARRIVED (car at their stop) → STARTED (on board) → COMPLETED (dropped off); pool status + `current_stop` say where the car is (D-008) | Implemented (`TripService`: arrive, pickup, dropoff, no-show, depart, cancel) |
 | Fare | ৳30 + ৳20 per hop, locked at request → −20% if 2+ passengers at STARTED, locked at STARTED (D-003) | (৳30 + direct km × ৳15) × seats; −20% if another passenger shared at least one hop; estimate = solo price (never exceeded); locked at drop-off (D-008) | Implemented (tested ৳60 / ৳72 / ৳108 shared, ৳75 alone, ৳75 when a seat is only handed over) |
@@ -684,3 +684,63 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 
 **Verified:** locally through the web proxy, 5 × 401 then 429. Live check after deploy, then released as v1.0.1 (a patch release on `release/v1.0.1`).
 
+
+
+---
+
+# Matching
+
+## D-014: Matching a request to a car by where the car is (2026-09-29)
+
+**Context (his request: optimisation matters for this system).** A code check found that the driver's location was only used by the route suggestion, not by matching:
+- **New trips ignored the car.** An idle driver could accept any request on the route, and the trip started at the passenger's stop. Example: Jashim finished at Bashundhara, accepted a request at Uttara, and the system assumed the car was at Uttara. In reality it had to drive 24 km empty, backwards, unpaid.
+- **Auto-join took the oldest trip, not the nearest car.** With two cars on one route, one a stop before the pickup and one four stops before, the older trip won and the rider waited longer.
+- **The driver's list was only by time.** It did not show which pickups were near.
+
+**Research.** This is the dial-a-ride / pickup-and-delivery problem: assign requests to vehicles so that waiting, detour and empty km are small.
+- Greedy matching (one request at a time, as here) is simple and fast.
+- Large platforms batch requests for a few seconds and match many to many (Uber/Lyft shared rides).
+- Alonso-Mora et al., PNAS 2017, "On-demand high-capacity ride-sharing via dynamic trip-vehicle assignment", builds a graph of which requests can share which vehicles in which order and solves the assignment as an optimisation, for thousands of vehicles.
+- Real systems add GPS-based ETAs and spatial indexes (e.g. H3 cells) to find nearby cars quickly.
+
+**Plan in three stages (his call: build stage 1 now).**
+1. **Now (this decision):** use the car's position in every match, with the route km we already store.
+2. **v1.1.0:** batch matching with a score (approach km, detour, empty km), offering requests to idle cars, request expiry, seats per stretch.
+3. **At scale:** GPS and ETAs, H3, and optimisation-based assignment.
+
+**What is built (stage 1).** Pure rules in `api/src/pooling/matching.ts`, used by `PoolingService.tryAutoJoin` and `DriverService`.
+- **Where the car is:**
+  - On a trip: the pool's `current_stop` (where it stands, or the next stop it drives to).
+  - Between trips: the stop of `vehicles.current_zone` on the chosen route.
+- **Approach km** = `km_from_start[pickup] − km_from_start[car]`, only for pickups at or ahead of the car (a car never drives backwards).
+- **A. New trips start at the car.**
+  - `newTripStart` makes the pool's `current_stop` the car's stop, so the car drives stop by stop to the pickup and can take others on the way.
+  - It refuses "Behind your car (…)" when the pickup is behind, and "Your car is not on this route: set your location first" when the car is not on the route or its place is unknown.
+  - `chooseRoute` also refuses a route that does not pass the car's zone.
+  - The empty stretch to the first pickup is not paid (earnings count only km with a passenger on board), as on most platforms.
+- **B. Auto-join, nearest car first.**
+  - `rankJoinCandidates` orders the running trips whose route passes the pickup by approach km, with the older trip on a tie.
+  - Trips whose car has passed the pickup, or whose route cannot carry the trip, are left out.
+  - This only changes the order of attempts. Each seat is still taken under that car's lock with R1–R4 re-checked, so the concurrency guarantees are unchanged.
+- **C. The driver's list, best first** (`orderWaitingList`):
+  1. Takeable requests waiting ≥ 5 minutes, oldest first. This is the aging rule: nobody is pushed down for ever by nearer ones.
+  2. Other takeable requests, nearest pickup first, then oldest.
+  3. Requests the driver cannot take, oldest first, each with its reason.
+  - Each item carries `pickupKmAhead`; the web shows "pickup 3 km ahead" or "at your stop".
+
+**Options considered:**
+- Oldest-first everywhere (before): fair, but slower pickups and empty backward drives. Replaced.
+- Nearest-first with no aging: fastest pickups, but a far request could wait for ever. Aging added.
+- Batch or optimisation matching now: better globally, but a scheduler, offers with timeouts and new race cases. Staged for v1.1.0 and later.
+
+**Known limit found while testing.** Auto-join only considers cars already on a trip. An idle car right at the pickup does not get the rider automatically; it sees the request at the top of its list, with "at your stop". Offering requests to idle cars is stage 2.
+
+**Tests:**
+- Unit, `matching.spec.ts` (12): the car's stop, approach km, new-trip start and its refusals, nearest-first with the tie rule, passed cars left out, list order with aging.
+- Integration, `matching.e2e-spec.ts` (5):
+  - a trip starts at Banani for a Mohakhali rider and earns ৳50 of ৳75 (the empty 3 km is unpaid)
+  - a pickup behind the car is refused
+  - the route must pass the car
+  - Rahim's car at Banani wins auto-join over Jashim's older trip 12 km away
+  - the list order is Nusrat (0 km), Rafiq (3 km), Shirin (behind)
+- All earlier tests still pass: 67 unit, 45 e2e.

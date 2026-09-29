@@ -50,7 +50,16 @@ export function WaitingRequests() {
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-medium">{request.passengerName}</p>
+                  <p className="flex items-center gap-2 font-medium">
+                    {request.passengerName}
+                    {request.pickupKmAhead !== null && (
+                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+                        {request.pickupKmAhead === 0
+                          ? "at your stop"
+                          : `pickup ${request.pickupKmAhead} km ahead`}
+                      </span>
+                    )}
+                  </p>
                   <p className="text-sm text-zinc-600">
                     {request.pickup} → {request.dropoff}
                   </p>

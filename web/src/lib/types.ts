@@ -64,6 +64,7 @@ export type WaitingRequest = {
   distanceKm: number;
   estimatedFarePaisa: number;
   requestedAt: string;
+  pickupKmAhead: number | null; // how far the car drives to the pickup; null: not reachable
   canAccept: boolean;
   reason: string | null;
 };
