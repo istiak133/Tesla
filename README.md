@@ -134,6 +134,24 @@ erDiagram
 
 All columns, constraints and lifecycles: [`docs/system-overview.pdf`](docs/system-overview.pdf).
 
+### Tables
+
+| Table | What it holds | Key constraints and indexes |
+|---|---|---|
+| `users` | Passengers and drivers, one role each | `email` unique, `CHECK email = lower(email)`; `role` is an enum |
+| `sessions` | One row per login: the SHA-256 hash of the cookie token and its expiry | `token_hash` unique; index on `user_id`; deleted at logout |
+| `zones` | The 14 Dhaka zones | `code` and `name` unique |
+| `zone_distances` | Direct km between every ordered pair of zones (182 rows); sets the fare | primary key (from, to); `CHECK km > 0`, `CHECK from <> to` |
+| `routes` | The six fixed routes (each direction on its own) | `code` and `name` unique |
+| `route_stops` | The zones of a route in driving order, with km from the first stop | primary key (route, position); unique (route, zone); `CHECK position ≥ 0`, `CHECK km_from_start ≥ 0` |
+| `vehicles` | Each driver's car: seats, online, chosen route, current zone. **Its row is the lock** for every seat change | `driver_id` unique (one car per driver); `CHECK seat_capacity > 0` |
+| `pools` | One trip of a car along its route: where it is (`status` + `current_stop`), seats taken, and the money split once completed | `CHECK seats_taken BETWEEN 0 AND seat_capacity`; **one active pool per vehicle** (partial unique index); `CHECK collected = driver + platform`; index on (status, route) for finding joinable trips |
+| `pool_members` | A ride's seats in a pool, from its pickup stop to its drop-off stop | **one active seat per ride** (partial unique on `left_at IS NULL`); `CHECK pickup_stop < dropoff_stop`; index on `pool_id` |
+| `ride_requests` | A passenger's trip: zones, seats, status, direct km, solo estimate and final fare | **one active ride per passenger** (partial unique); `CHECK seats 1..3`, `CHECK pickup <> drop-off`, `CHECK fares ≥ 0`; indexes on (status, created) for the waiting list and (passenger, created) for history |
+| `ride_events` | The audit trail: every status change with from, to, actor, reason and time | index on (ride, created); the actor is null for the system |
+
+Money is integer paisa everywhere, times are `timestamptz` (UTC, shown in Dhaka time), and ids are UUIDs. Payment is cash, so there is no payments table: each completed pool records what was collected and how it splits. Ratings are out of scope.
+
 ## Tech stack
 
 | Layer | Choice |
@@ -153,12 +171,16 @@ All columns, constraints and lifecycles: [`docs/system-overview.pdf`](docs/syste
 | **REST** | GraphQL, tRPC | Few resources and screens with fixed shapes; business rules map cleanly to HTTP status codes (409 for a lost seat, 403 for someone else's ride); simple to test with Supertest and to cache | GraphQL when several clients (mobile apps, partners) need different shapes of the same data and over-fetching becomes a real cost |
 | **NestJS** | Fastify, Express | Modules, controllers, services and guards enforce the layered architecture and keep auth checks in one place | For a single hot path, run Nest on its Fastify adapter; plain Fastify for a tiny service |
 | **PostgreSQL** | MongoDB, MySQL | Row locks, CHECK constraints and partial unique indexes make seat safety a database guarantee, not only a code promise | Never for the core; at scale add read replicas and split by city area |
-| **Prisma** | Drizzle, TypeORM, raw SQL | Typed client and migrations; raw SQL only for the vehicle lock and hand-written constraints | If most queries became hand-tuned SQL, a query builder (Drizzle, Kysely) |
+| **Prisma** | Drizzle, TypeORM, raw SQL | Typed queries for the pool, member and ride joins, and versioned migrations where the seat CHECKs and partial unique indexes are written by hand; raw SQL only for `SELECT … FOR UPDATE` | If most queries became hand-tuned SQL, a query builder (Drizzle, Kysely) |
 | **Database sessions** | JWT | An httpOnly cookie through the same-origin proxy, revocable at logout, no token handling in the browser | Short-lived JWTs when many services must verify users without a database call, or for native mobile apps |
 | **Next.js + TanStack Query** | React SPA (Vite), server-rendered pages | The `/api` rewrite gives a first-party cookie with no CORS; TanStack Query gives polling, loading and error states | A native app when drivers need background location |
 | **Polling every 3 s** | WebSockets, SSE | Simple, works on free hosting; correctness never depends on it because every action is re-checked under the lock (D-007) | Adaptive polling, then SSE or WebSockets with pub/sub as screens grow |
 | **Vitest + Supertest on a real PostgreSQL** | Jest, mocked database | Race conditions and constraints can only be proven against the real database | Not planned |
-| **Free tiers: Vercel, Render, Neon** | Koyeb, Fly.io, Supabase | Free, public URL, Docker for the API, managed Postgres | Paid plans to remove cold starts |
+| **Tailwind CSS** (styling) | CSS Modules, a component library (MUI, shadcn/ui) | Two small screens with clear states (loading, error, empty, the route line) built fast and consistently, with no design-system weight | A component library once there are many screens, forms and a design team |
+| **class-validator DTOs** (validation) | Zod, Joi | Built into NestJS's `ValidationPipe`: every request body is checked and unknown fields are rejected before a service sees it | Zod if the web and API shared schemas in one monorepo |
+| **pino** (logging) | Winston, console | Structured JSON with one request id per request, so a race or a failed booking can be traced across lines; session cookies are redacted | A log platform (Loki, Datadog) and metrics once there is real traffic |
+| **bcryptjs + throttler** (password, rate limit) | argon2, a gateway rate limit | Pure JavaScript (no native build in Docker); 5 login or sign-up attempts per minute per IP stops guessing | argon2id and a gateway or Redis-backed rate limit when running several API instances |
+| **Free tiers: Vercel, Render, Neon** | Koyeb, Fly.io, Supabase | Free and public; Render runs the same Docker image as local, and Neon is real PostgreSQL, so the row lock and constraints behave in production exactly as in the tests | Paid plans to remove cold starts |
 
 Full reasoning for each: [`decisions.md`](decisions.md).
 
@@ -295,7 +317,9 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | API | **Render** web service (Docker, free) | Root `api`, health check `/health`; env `NODE_ENV=production`, `DATABASE_URL` (Neon), `DATABASE_POOL_MAX=5`, `LOG_LEVEL=info`, `TRUST_PROXY_HOPS=2` |
 | Web | **Vercel** (Next.js, free) | Root `web`; env `API_URL=https://<your-api>.onrender.com` |
 
-On every start the API container runs `prisma migrate deploy`, then the idempotent seed, then the server, so a fresh Neon database is ready with no manual step. The browser only talks to Vercel; the `/api/*` rewrite forwards to Render, so the session cookie stays first-party (Secure in production) and no CORS is needed.
+On every start the API container runs `prisma migrate deploy`, then the idempotent seed, then the server, so a fresh Neon database is ready with no manual step.
+
+**If free hosting is not available:** the same stack deploys on any machine with Docker. Copy `.env.example` to `.env`, set a strong `POSTGRES_PASSWORD`, and run `docker compose up -d --build`. Compose starts PostgreSQL, the API (which migrates and seeds itself) and the web app in order, gated by health checks. The browser only talks to Vercel; the `/api/*` rewrite forwards to Render, so the session cookie stays first-party (Secure in production) and no CORS is needed.
 
 ## API overview
 
@@ -329,6 +353,32 @@ On every start the API container runs `prisma migrate deploy`, then the idempote
 Business errors return `{ statusCode, code, message }`, e.g. `409 SEATS_UNAVAILABLE`, `403 NOT_YOUR_RIDE`.
 
 Through the web app every path is prefixed with `/api` (e.g. `/api/auth/login`).
+
+### Errors
+
+Services never mention HTTP: they throw a business error with a code, and one filter turns it into `{ statusCode, code, message }`.
+
+| Status | When |
+|---|---|
+| `400` | Invalid input (DTO validation, unknown fields), `INVALID_ZONE`, `NO_ROUTE` |
+| `401` | No valid session cookie, or wrong email/password |
+| `403` | Wrong role for the route, `NOT_YOUR_RIDE`, `NO_VEHICLE` |
+| `404` | `NOT_FOUND` (ride, route, zone, or a passenger not in this trip) |
+| `409` | Business rules: `SEATS_UNAVAILABLE`, `NOT_COMPATIBLE`, `ALREADY_TAKEN`, `INVALID_TRANSITION`, `ACTIVE_RIDE_EXISTS`, `HAS_ACTIVE_POOL`, `NO_ACTIVE_POOL`, `DRIVER_OFFLINE`, `ROUTE_REQUIRED`, `POOL_NOT_OPEN`, or an email already registered |
+| `429` | More than 5 sign-up or login attempts per minute |
+| `503` | `BUSY`: the vehicle's lock was held for more than 3 s; safe to retry |
+
+On the web, every error is shown next to the action that caused it, and a `401` from any screen (for example an expired session) sends the user back to the login page.
+
+### Security basics
+
+- **Passwords:** bcrypt (cost 10), at least 8 characters; never logged or returned.
+- **Sessions:** a random 32-byte token in an httpOnly, SameSite=Lax cookie (Secure in production), 12 h; only its SHA-256 hash is stored, so a database leak does not expose live sessions. Logout deletes the row.
+- **Same origin:** the browser only talks to the web app; `/api/*` is forwarded to the API, so there is no CORS to configure.
+- **Access control:** a session guard on every private route, a role guard (passenger vs driver), and an ownership check in the service (`403 NOT_YOUR_RIDE`). Co-riders see only first names, never fares.
+- **Input:** a whitelisting `ValidationPipe`, UUID checks on every id in the URL, and database CHECKs as the last line.
+- **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login; `trust proxy` set to the real number of proxies so the limit counts the real client IP.
+- **Secrets:** none in the repository (only `.env.example`); logs redact cookies and authorization headers; the API refuses to start with invalid configuration.
 
 ## Fare model
 
