@@ -276,7 +276,9 @@ export class DriverService {
       if (ride.status !== RideStatus.REQUESTED) {
         throw new RideError(
           'ALREADY_TAKEN',
-          'This request is no longer waiting',
+          ride.status === RideStatus.CANCELLED
+            ? 'The passenger cancelled this request'
+            : 'This request is no longer waiting',
         );
       }
 
