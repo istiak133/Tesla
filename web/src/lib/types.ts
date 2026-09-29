@@ -108,7 +108,10 @@ export type PastTrip = {
   route: string;
   startedAt: string | null;
   endedAt: string | null;
-  totalFarePaisa: number;
+  // The money split, locked when the trip completed (null for a cancelled trip).
+  collectedPaisa: number | null;
+  driverEarningsPaisa: number | null;
+  platformFeePaisa: number | null;
   passengers: {
     name: string;
     pickup: string;

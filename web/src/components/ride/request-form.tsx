@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "@/lib/api";
-import type { Ride, Route, Zone } from "@/lib/types";
+import type { Ride, Zone } from "@/lib/types";
 import { Button, Card, ErrorNote, Field, inputClass, Loading } from "../ui";
 
 export function RequestForm() {
@@ -13,13 +13,14 @@ export function RequestForm() {
     queryFn: () => api<Zone[]>("/zones"),
     staleTime: Infinity, // zones never change
   });
-  const routes = useQuery({
-    queryKey: ["routes"],
-    queryFn: () => api<Route[]>("/routes"),
+  const [pickupZoneId, setPickupZoneId] = useState("");
+  // Only destinations a route carries from this pickup without going too far round.
+  const destinations = useQuery({
+    queryKey: ["destinations", pickupZoneId],
+    queryFn: () => api<Zone[]>(`/zones/${pickupZoneId}/destinations`),
+    enabled: pickupZoneId !== "",
     staleTime: Infinity, // routes never change
   });
-
-  const [pickupZoneId, setPickupZoneId] = useState("");
   const [dropoffZoneId, setDropoffZoneId] = useState("");
   const [seats, setSeats] = useState(1);
 
@@ -35,27 +36,14 @@ export function RequestForm() {
     },
   });
 
-  // Tesla Pool drives fixed routes: only zones later on a route through the pickup can be reached.
-  const servingRoutes = (routes.data ?? []).filter((route) => {
-    const from = route.stops.findIndex((stop) => stop.zone.id === pickupZoneId);
-    const to = route.stops.findIndex((stop) => stop.zone.id === dropoffZoneId);
-    return from !== -1 && (dropoffZoneId === "" || to > from);
-  });
-  const reachable = new Set<string>();
-  for (const route of routes.data ?? []) {
-    const from = route.stops.findIndex((stop) => stop.zone.id === pickupZoneId);
-    if (from === -1) continue;
-    for (const stop of route.stops.slice(from + 1)) reachable.add(stop.zone.id);
-  }
-
   return (
     <Card title="Request a ride">
-      {(zones.isPending || routes.isPending) && (
-        <Loading label="Loading zones…" />
-      )}
+      {zones.isPending && <Loading label="Loading zones…" />}
       {zones.isError && <ErrorNote message={zones.error.message} />}
-      {routes.isError && <ErrorNote message={routes.error.message} />}
-      {zones.data && routes.data && (
+      {destinations.isError && (
+        <ErrorNote message={destinations.error.message} />
+      )}
+      {zones.data && (
         <form
           className="space-y-4"
           onSubmit={(event) => {
@@ -86,7 +74,7 @@ export function RequestForm() {
               <select
                 className={inputClass}
                 required
-                disabled={pickupZoneId === ""}
+                disabled={pickupZoneId === "" || destinations.isPending}
                 value={dropoffZoneId}
                 onChange={(event) => setDropoffZoneId(event.target.value)}
               >
@@ -95,13 +83,11 @@ export function RequestForm() {
                     ? "Choose a pickup first"
                     : "Choose a zone"}
                 </option>
-                {zones.data
-                  .filter((zone) => reachable.has(zone.id))
-                  .map((zone) => (
-                    <option key={zone.id} value={zone.id}>
-                      {zone.name}
-                    </option>
-                  ))}
+                {destinations.data?.map((zone) => (
+                  <option key={zone.id} value={zone.id}>
+                    {zone.name}
+                  </option>
+                ))}
               </select>
             </Field>
           </div>
@@ -127,9 +113,8 @@ export function RequestForm() {
 
           {pickupZoneId !== "" && dropoffZoneId !== "" && (
             <p className="text-xs text-zinc-500">
-              On {servingRoutes.map((route) => route.name).join(" or ")}. A
-              Tesla already on the way can pick you up if it has not passed your
-              stop.
+              A Tesla already on its route can pick you up if it has not passed
+              your stop.
             </p>
           )}
           {request.isError && <ErrorNote message={request.error.message} />}
