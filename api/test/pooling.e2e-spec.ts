@@ -179,6 +179,14 @@ describe('Ride requests and pooling (e2e)', () => {
       .send({ pickupZoneId: GL1, dropoffZoneId: M10, seats: 1 });
     expect(response.status).toBe(400);
     expect(response.body.code).toBe('NO_ROUTE');
+
+    // A route that exists but goes too far round is not sold either:
+    // Uttara → Bashundhara on Airport Road is 24 km for a 9 km trip.
+    const farRound = await nusrat
+      .post('/rides')
+      .send({ pickupZoneId: UTT, dropoffZoneId: BSH, seats: 1 });
+    expect(farRound.status).toBe(400);
+    expect(farRound.body.code).toBe('NO_ROUTE');
   });
 
   /** Nusrat (Banani → Mohakhali) picked up; Bullet has left Banani for Mohakhali. */
