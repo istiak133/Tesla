@@ -118,7 +118,17 @@ export class PoolingService {
       data: { status: RideStatus.MATCHED },
     });
     if (claimed.count === 0) {
-      throw new RideError('ALREADY_TAKEN', 'This request is no longer waiting');
+      // Say why, so the driver's screen is clear: the passenger cancelled, or another
+      // car was faster.
+      const now = await tx.rideRequest.findUniqueOrThrow({
+        where: { id: ride.id },
+      });
+      throw new RideError(
+        'ALREADY_TAKEN',
+        now.status === RideStatus.CANCELLED
+          ? 'The passenger cancelled this request'
+          : 'This request is no longer waiting',
+      );
     }
 
     // Seat update with its conditions in the SQL itself (second line of defence):

@@ -257,7 +257,9 @@ Every passenger status change is recorded in `ride_events` with the ride, the po
 | **Who** | Only the passenger who owns the ride. Anyone else receives `403 Forbidden`. |
 | **Seats** | Released immediately, in the same transaction. |
 | **Empty pool** | If nobody is left, the pool closes and the driver becomes free. |
-| **Fee** | None in the MVP. |
+| **Twice** | Cancelling a ride that is already cancelled returns it as it is (a double tap or a retry is not an error). After pickup: `409` "A ride cannot be cancelled after pickup"; after drop-off: `409` "This ride is already finished". |
+| **At the same moment as the driver** | Accept, pickup, no-show and trip cancel all run under the same vehicle lock, so exactly one wins and the other is told why (e.g. the driver sees "The passenger cancelled this request"). Decision D-016. |
+| **Fee** | None in the MVP: cash cannot be collected from someone who never rode. Planned with the wallet: a fee once the car has arrived, paid to the driver. |
 
 ### 6.2 Effect on Other Passengers' Fares
 

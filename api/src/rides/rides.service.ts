@@ -120,97 +120,103 @@ export class RidesService {
   }
 
   /**
-   * Passenger cancel: allowed until the passenger is picked up (docs/assumptions.md §6.1).
-   * The ride can change while we reach the lock (the driver cancels the trip, or it joins
-   * another car), so everything is checked again under the lock, with one retry.
+   * Passenger cancel (docs/assumptions.md §6.1, decision D-016): allowed while the ride is
+   * waiting, matched or the car is at the stop; refused once picked up or finished.
+   *
+   * The ride can change between our read and the lock (a driver accepts it, the driver
+   * cancels the trip, a no-show, another car takes it), so each attempt looks again and
+   * decides only on what it saw under the right lock. A ride that is already cancelled
+   * returns as it is, so a double tap or a retry gets the same answer, not an error.
    */
-  async cancelRide(
-    passengerId: string,
-    rideId: string,
-    attempt = 1,
-  ): Promise<RideView> {
-    const ride = await this.ridesRepository.findRide(rideId);
-    if (ride === null) {
-      throw new RideError('NOT_FOUND', 'Ride not found');
-    }
-    if (ride.passengerId !== passengerId) {
-      throw new RideError('NOT_YOUR_RIDE', 'This ride belongs to someone else');
-    }
-
-    if (ride.status === RideStatus.REQUESTED) {
-      const cancelled = await this.ridesRepository.cancelWaitingRide(
-        rideId,
-        passengerId,
-      );
-      if (cancelled) {
+  async cancelRide(passengerId: string, rideId: string): Promise<RideView> {
+    for (let attempt = 1; attempt <= CANCEL_ATTEMPTS; attempt++) {
+      const ride = await this.ridesRepository.findRide(rideId);
+      if (ride === null) {
+        throw new RideError('NOT_FOUND', 'Ride not found');
+      }
+      if (ride.passengerId !== passengerId) {
+        throw new RideError(
+          'NOT_YOUR_RIDE',
+          'This ride belongs to someone else',
+        );
+      }
+      refuseCancel(ride.status);
+      if (ride.status === RideStatus.CANCELLED) {
         return this.getRide(passengerId, rideId);
       }
-      // It was matched a moment ago; fall through and cancel it out of its pool.
-    }
 
-    const membership = await this.ridesRepository.findActiveMembership(rideId);
-    if (membership === null) {
-      throw new RideError(
-        'INVALID_TRANSITION',
-        'This ride can no longer be cancelled',
-      );
-    }
-
-    const vehicleId = membership.pool.vehicleId;
-    const outcome = await this.ridesRepository.withVehicleLock(
-      vehicleId,
-      async (tx) => {
-        const current = await tx.rideRequest.findUniqueOrThrow({
-          where: { id: rideId },
-        });
-
-        // The driver cancelled the trip a moment ago: the ride is waiting again.
-        if (current.status === RideStatus.REQUESTED) {
-          await this.ridesRepository.cancelIfWaiting(tx, rideId, passengerId);
-          return 'done';
+      if (ride.status === RideStatus.REQUESTED) {
+        // Not in any car: a compare-and-set on the ride is enough. If a driver took it
+        // a moment ago, look again: it is now in that car.
+        if (await this.ridesRepository.cancelWaitingRide(rideId, passengerId)) {
+          return this.getRide(passengerId, rideId);
         }
-        if (current.status === RideStatus.STARTED) {
-          throw new RideError(
-            'INVALID_TRANSITION',
-            'A ride cannot be cancelled after pickup',
-          );
-        }
-        if (
-          current.status !== RideStatus.MATCHED &&
-          current.status !== RideStatus.DRIVER_ARRIVED
-        ) {
-          throw new RideError(
-            'INVALID_TRANSITION',
-            'This ride can no longer be cancelled',
-          );
-        }
-
-        // The seat must still be in this vehicle's trip (the one we locked).
-        const seat = await tx.poolMember.findFirst({
-          where: { rideRequestId: rideId, leftAt: null },
-          include: { pool: true },
-        });
-        if (seat === null || seat.pool.vehicleId !== vehicleId) {
-          return 'moved';
-        }
-        await this.poolingService.leaveUnderLock(
-          tx,
-          seat.poolId,
-          current,
-          passengerId,
-          'Passenger cancelled',
-        );
-        return 'done';
-      },
-    );
-
-    if (outcome === 'moved') {
-      // It joined another car in the meantime: try once more with that car's lock.
-      if (attempt === 1) {
-        return this.cancelRide(passengerId, rideId, 2);
+        continue;
       }
-      throw new RideError('BUSY', 'The ride just changed, please try again');
+
+      // MATCHED or DRIVER_ARRIVED: the seat is in a car, so change it under that car's lock.
+      const membership =
+        await this.ridesRepository.findActiveMembership(rideId);
+      if (membership === null) {
+        continue; // it just left the car (trip cancelled, no-show): look again
+      }
+      const vehicleId = membership.pool.vehicleId;
+      const settled = await this.ridesRepository.withVehicleLock(
+        vehicleId,
+        async (tx) => {
+          const current = await tx.rideRequest.findUniqueOrThrow({
+            where: { id: rideId },
+          });
+          refuseCancel(current.status);
+          if (current.status === RideStatus.CANCELLED) {
+            return true; // a no-show or the other tap got here first
+          }
+          if (current.status === RideStatus.REQUESTED) {
+            // The driver cancelled the trip a moment ago: the ride is waiting again.
+            return this.ridesRepository.cancelIfWaiting(
+              tx,
+              rideId,
+              passengerId,
+            );
+          }
+          // The seat must still be in this vehicle's trip (the one we locked).
+          const seat = await tx.poolMember.findFirst({
+            where: { rideRequestId: rideId, leftAt: null },
+            include: { pool: true },
+          });
+          if (seat === null || seat.pool.vehicleId !== vehicleId) {
+            return false; // it moved to another car: look again with that car's lock
+          }
+          await this.poolingService.leaveUnderLock(
+            tx,
+            seat.poolId,
+            current,
+            passengerId,
+            'Passenger cancelled',
+          );
+          return true;
+        },
+      );
+      if (settled) {
+        return this.getRide(passengerId, rideId);
+      }
     }
-    return this.getRide(passengerId, rideId);
+    throw new RideError('BUSY', 'The ride just changed, please try again');
+  }
+}
+
+// A ride changes hands at most a few times in a second; after this many looks, ask to retry.
+const CANCEL_ATTEMPTS = 3;
+
+/** Throws if the passenger may not cancel a ride in this status any more. */
+function refuseCancel(status: RideStatus): void {
+  if (status === RideStatus.STARTED) {
+    throw new RideError(
+      'INVALID_TRANSITION',
+      'A ride cannot be cancelled after pickup',
+    );
+  }
+  if (status === RideStatus.COMPLETED) {
+    throw new RideError('INVALID_TRANSITION', 'This ride is already finished');
   }
 }
