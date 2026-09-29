@@ -1,5 +1,6 @@
 // The shapes the API returns. Built from database rows here, so controllers stay thin
 // and nothing private (other passengers' fares, password hashes) leaks by accident.
+import { cancellationFeePaisa } from '../fares/cancellation.js';
 import { RideStatus } from '../generated/prisma/client.js';
 import { RidesRepository } from './rides.repository.js';
 
@@ -14,6 +15,11 @@ export type RideView = {
   distanceKm: number;
   estimatedFarePaisa: number;
   finalFarePaisa: number | null;
+  // Late-cancel fees (D-018): what this ride was charged for being cancelled late, what a
+  // cancel would cost right now, and earlier fees paid (or to be paid) with this ride.
+  cancellationFeePaisa: number;
+  cancelNowFeePaisa: number;
+  duesPaisa: number;
   createdAt: Date;
   driver: { name: string; vehicleName: string } | null;
   // The Tesla's route and where the car is, once the ride has a seat.
@@ -34,7 +40,15 @@ type RideDetails = NonNullable<
   Awaited<ReturnType<RidesRepository['findRideDetails']>>
 >;
 
-export function toRideView(ride: RideDetails): RideView {
+/**
+ * `unpaidDuesPaisa`: fees from earlier cancels the passenger still owes. They are paid with
+ * an active ride; a finished ride shows what was actually collected with it.
+ */
+export function toRideView(
+  ride: RideDetails,
+  unpaidDuesPaisa: number,
+  now: Date = new Date(),
+): RideView {
   // The latest seat: still held, or finished by being dropped off.
   const membership = ride.memberships[0];
   const hasSeat =
@@ -51,6 +65,24 @@ export function toRideView(ride: RideDetails): RideView {
     distanceKm: ride.distanceKm,
     estimatedFarePaisa: ride.estimatedFarePaisa,
     finalFarePaisa: ride.finalFarePaisa,
+    cancellationFeePaisa: ride.cancellationFeePaisa,
+    cancelNowFeePaisa:
+      pool !== null &&
+      (ride.status === RideStatus.MATCHED ||
+        ride.status === RideStatus.DRIVER_ARRIVED)
+        ? cancellationFeePaisa({
+            carStop: pool.currentStop,
+            pickupStop: membership.pickupStop,
+            joinedAt: membership.joinedAt,
+            now,
+          })
+        : 0,
+    duesPaisa:
+      ride.status === RideStatus.COMPLETED
+        ? ride.duesCollectedPaisa
+        : ride.status === RideStatus.CANCELLED
+          ? 0
+          : unpaidDuesPaisa,
     createdAt: ride.createdAt,
     driver:
       pool === null

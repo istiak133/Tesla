@@ -124,16 +124,30 @@ export class DriverService {
           'During a trip your location follows the stops',
         );
       }
+      // A route that does not pass the new location can no longer be driven from here
+      // (a trip starts where the car is, D-014): clear it, and go offline until the driver
+      // picks one of the routes listed for this location (D-019).
+      const locked = await tx.vehicle.findUniqueOrThrow({
+        where: { id: vehicle.id },
+      });
+      const routeStillPasses =
+        locked.routeId !== null &&
+        (await tx.routeStop.count({
+          where: { routeId: locked.routeId, zoneId },
+        })) > 0;
       await tx.vehicle.update({
         where: { id: vehicle.id },
-        data: { currentZoneId: zoneId },
+        data: routeStillPasses
+          ? { currentZoneId: zoneId }
+          : { currentZoneId: zoneId, routeId: null, isOnline: false },
       });
     });
   }
 
   /**
-   * Every route ranked for this driver, best first, with the suggested one.
-   * Only advice: the driver still chooses (chooseRoute).
+   * The routes this driver can take from where the car is (only routes that pass the car's
+   * zone: a trip starts at the car, D-014), ranked by riders waiting ahead, with the
+   * suggested one. No location yet → no routes. Only advice: the driver still chooses.
    */
   async suggestRoutes(driverId: string): Promise<{
     currentZone: { id: string; name: string } | null;
@@ -158,7 +172,7 @@ export class DriverService {
           ? null
           : { id: vehicle.currentZone.id, name: vehicle.currentZone.name },
       suggestedRouteId: suggestedRoute(ranked)?.routeId ?? null,
-      routes: ranked,
+      routes: ranked.filter((route) => route.passesYou),
     };
   }
 
@@ -340,12 +354,26 @@ export class DriverService {
         collectedPaisa: pool.collectedPaisa,
         driverEarningsPaisa: pool.driverEarningsPaisa,
         platformFeePaisa: pool.platformFeePaisa,
+        // D-018: late-cancel fees earned on this trip (the platform pays them to the driver),
+        // and earlier riders' fees collected in cash here (handed to the platform).
+        cancellationFeesPaisa: pool.cancellationFees.reduce(
+          (sum, ride) => sum + ride.cancellationFeePaisa,
+          0,
+        ),
+        lateCancels: pool.cancellationFees.map((ride) =>
+          firstName(ride.passenger.name),
+        ),
+        duesCollectedPaisa: riders.reduce(
+          (sum, rider) => sum + rider.rideRequest.duesCollectedPaisa,
+          0,
+        ),
         passengers: riders.map((rider) => ({
           name: firstName(rider.rideRequest.passenger.name),
           pickup: rider.rideRequest.pickupZone.name,
           dropoff: rider.rideRequest.dropoffZone.name,
           seats: rider.seats,
           finalFarePaisa: rider.rideRequest.finalFarePaisa,
+          duesCollectedPaisa: rider.rideRequest.duesCollectedPaisa,
         })),
       };
     });
@@ -358,6 +386,17 @@ export class DriverService {
       throw new RideError('NO_VEHICLE', 'This driver account has no vehicle');
     }
     const pool = await this.ridesRepository.findActivePoolDetails(vehicle.id);
+    // What each rider still owes from earlier late cancels: collected with this fare (D-018).
+    const duesByRide = new Map<string, number>();
+    for (const member of pool?.members ?? []) {
+      const unpaid = await this.ridesRepository.findUnpaidFees(
+        member.rideRequest.passengerId,
+      );
+      duesByRide.set(
+        member.rideRequestId,
+        unpaid.reduce((sum, ride) => sum + ride.cancellationFeePaisa, 0),
+      );
+    }
 
     return {
       vehicle: {
@@ -400,6 +439,7 @@ export class DriverService {
                   dropoffStop: member.dropoffStop,
                   estimatedFarePaisa: member.rideRequest.estimatedFarePaisa,
                   finalFarePaisa: member.rideRequest.finalFarePaisa,
+                  duesPaisa: duesByRide.get(member.rideRequestId) ?? 0,
                 })),
             },
     };
