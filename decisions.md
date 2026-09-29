@@ -538,3 +538,14 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 ## D-006: Documentation synced with the implementation (2026-09-29)
 - `docs/system-overview` and `docs/ride-flow` (PDF + SVG) regenerated for the final design: 9 tables, zones and distances, the shared status set, M1–M4 matching, auto-join, fares locked at start. Planned-but-deferred items (seat hold, expiry, no-show, en-route joins) were removed from the diagrams and are listed as next improvements.
 - `docs/architecture.md` updated (module list, lock rules including "load outside data before the lock", request lifecycle, fare, deployment). `docs/assumptions.md` payment wording corrected (cash paid on completion; no separate paid flag).
+
+
+## D-007: Live updates by polling every 3 seconds (2026-09-29)
+
+**Decision:** Screens poll the API: the passenger's current ride and the driver's waiting requests and trip every 3 s; histories every 10 s. Any action (accept, start, cancel) updates the screen immediately without waiting for the next poll.
+
+**Why 3 s and not 1 s:** 1 s would triple the load (a driver screen makes 2 requests per poll: 120 vs 40 per minute) for a difference nobody notices in a ride app, where the vehicle takes minutes to arrive. Free tiers are tight: Render's small CPU, Neon's limited compute hours (constant queries keep it from sleeping) and a 5-connection pool. Correctness never depends on freshness: every accept, join and start is re-checked under the vehicle lock, so a stale screen can only lead to a clear "already taken" error, never to overbooking.
+
+**At larger scale (next improvements):**
+- **Adaptive polling:** poll faster while a trip is active (e.g. 1–2 s) and slower when idle (10–30 s), and pause in background tabs.
+- **Server push with WebSockets or Server-Sent Events (SSE):** the server sends changes as they happen (ride matched, driver arrived, fares locked). With 10,000 drivers polling every 3 s the API would serve about 6,700 requests per second that mostly say "nothing changed"; push sends only real changes. It needs a connection layer that scales horizontally (sticky sessions or a shared pub/sub between API instances), which is why it is not in the MVP.

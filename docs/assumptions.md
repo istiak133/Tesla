@@ -277,7 +277,7 @@ passengerFare = subtotal − poolDiscount
 
 | Area | Assumption | Reason |
 |---|---|---|
-| **Live updates** | Screens poll every 3–5 seconds. | Simple and reliable on free hosting; WebSockets are a future improvement. |
+| **Live updates** | Screens poll every 3 s (histories every 10 s); actions update the screen immediately. | Simple and reliable on free hosting, and correctness never depends on it (every action is re-checked under the lock). At scale: adaptive polling, then WebSockets or SSE (see D-007). |
 | **Concurrency** | Seat reservation locks the vehicle row inside a transaction, backed by a database `CHECK` constraint. | Two passengers racing for the last seat must never both succeed. |
 | **Time zone** | Timestamps are stored in UTC and shown in Asia/Dhaka (UTC+6). | Avoids ambiguity in history and tests. |
 | **Language** | The UI is in English. | Keeps the MVP scope small; Bangla is a future improvement. |
