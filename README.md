@@ -7,7 +7,7 @@ vehicle without ever exceeding its seats. Built around the PRD's cast: driver **
 three-seat **Bullet**, and passengers **Nusrat**, **Rafiq** and **Shirin**.
 
 > **Status:** MVP complete. En-route pooling on fixed routes, the stop-by-stop trip, fares and the
-> driver/platform money split, with 52 unit and 40 end-to-end tests.
+> driver/platform money split, with 55 unit and 40 end-to-end tests.
 
 ---
 
@@ -377,7 +377,7 @@ On the web, every error is shown next to the action that caused it, and a `401` 
 - **Same origin:** the browser only talks to the web app; `/api/*` is forwarded to the API, so there is no CORS to configure.
 - **Access control:** a session guard on every private route, a role guard (passenger vs driver), and an ownership check in the service (`403 NOT_YOUR_RIDE`). Co-riders see only first names, never fares.
 - **Input:** a whitelisting `ValidationPipe`, UUID checks on every id in the URL, and database CHECKs as the last line.
-- **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login; `trust proxy` set to the real number of proxies so the limit counts the real client IP.
+- **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login, counted per real client: the first `X-Forwarded-For` address, which Vercel sets and overwrites, because counting proxy hops was not stable behind Vercel and Render (found by the live stress test, fixed in v1.0.1).
 - **Secrets:** none in the repository (only `.env.example`); logs redact cookies and authorization headers; the API refuses to start with invalid configuration.
 
 ## Fare model
@@ -491,6 +491,7 @@ What we would **not** add without a measured reason: microservices per feature, 
 - **Requests do not expire.** A waiting request stays until it is matched or cancelled.
 - **Demo helpers.** The login page has one-click demo accounts and the demo password is public; both are for the reviewer and must be turned off in a real deployment. Drivers cannot sign up (they are onboarded by the operator; one is seeded).
 - **Expired sessions are rejected but not deleted;** a cleanup job is not built.
+- **Rate limit on direct API calls.** Through the web app the client address cannot be faked, but a caller who hits the API URL directly could send a fake `X-Forwarded-For` to dodge the login limit. The fix is a gateway rate limit or accepting API traffic only from the web proxy.
 - **Hosting.** The free API tier sleeps when idle (slow first request), and the API image is large (~790 MB) because it includes the Prisma CLI to run migrations at start.
 
 ## Next improvements
@@ -540,7 +541,7 @@ Each one, with how we would build it:
 - **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **What I checked myself**
-- Every claim is backed by a test: 52 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- Every claim is backed by a test: 55 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - No secrets, keys or personal data were given to the AI. Demo accounts use the reserved `.test` domain.
