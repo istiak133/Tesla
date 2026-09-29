@@ -19,14 +19,15 @@ import {
 } from '../config/env.validation.js';
 import { Prisma } from '../generated/prisma/client.js';
 import {
-  EmailAlreadyRegisteredError,
+  AlreadyRegisteredError,
   InvalidCredentialsError,
+  WrongAccountTypeError,
 } from './auth.errors.js';
-import { AuthService } from './auth.service.js';
+import { AuthService, type LoginResult } from './auth.service.js';
 import type { PublicUser } from './auth.types.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { LoginDto } from './dto/login.dto.js';
-import { SignupDto } from './dto/signup.dto.js';
+import { DriverSignupDto, PassengerSignupDto } from './dto/signup.dto.js';
 import { SessionAuthGuard } from './guards/session-auth.guard.js';
 import { SESSION_COOKIE_NAME, sessionCookieOptions } from './session-cookie.js';
 
@@ -40,31 +41,28 @@ export class AuthController {
     private readonly config: ConfigService<EnvironmentVariables, true>,
   ) {}
 
-  // POST /auth/signup → 201, sets the session cookie
-  @Post('signup')
+  // POST /auth/signup/passenger → 201, sets the session cookie
+  @Post('signup/passenger')
   @UseGuards(ThrottlerGuard)
   @Throttle(AUTH_RATE_LIMIT)
-  async signup(
-    @Body() body: SignupDto,
+  async signupPassenger(
+    @Body() body: PassengerSignupDto,
     @Res({ passthrough: true }) response: Response,
   ): Promise<PublicUser> {
-    try {
-      const result = await this.authService.signup(
-        body.name,
-        body.email,
-        body.password,
-      );
-      this.setSessionCookie(response, result.sessionToken);
-      return result.user;
-    } catch (error) {
-      if (
-        error instanceof EmailAlreadyRegisteredError ||
-        isUniqueViolation(error)
-      ) {
-        throw new ConflictException('Email is already registered');
-      }
-      throw error;
-    }
+    return this.signedUp(response, () =>
+      this.authService.signupPassenger(body),
+    );
+  }
+
+  // POST /auth/signup/driver → 201: the driver, their documents and vehicle; sets the cookie
+  @Post('signup/driver')
+  @UseGuards(ThrottlerGuard)
+  @Throttle(AUTH_RATE_LIMIT)
+  async signupDriver(
+    @Body() body: DriverSignupDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<PublicUser> {
+    return this.signedUp(response, () => this.authService.signupDriver(body));
   }
 
   // POST /auth/login → 200, sets the session cookie
@@ -77,12 +75,23 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<PublicUser> {
     try {
-      const result = await this.authService.login(body.email, body.password);
+      const result = await this.authService.login(
+        body.role,
+        body.email,
+        body.password,
+      );
       this.setSessionCookie(response, result.sessionToken);
       return result.user;
     } catch (error) {
       if (error instanceof InvalidCredentialsError) {
         throw new UnauthorizedException(error.message);
+      }
+      if (error instanceof WrongAccountTypeError) {
+        throw new UnauthorizedException({
+          statusCode: 401,
+          code: 'WRONG_ACCOUNT_TYPE',
+          message: error.message,
+        });
       }
       throw error;
     }
@@ -106,6 +115,35 @@ export class AuthController {
   @UseGuards(SessionAuthGuard)
   me(@CurrentUser() user: PublicUser): PublicUser {
     return user;
+  }
+
+  private async signedUp(
+    response: Response,
+    signup: () => Promise<LoginResult>,
+  ): Promise<PublicUser> {
+    try {
+      const result = await signup();
+      this.setSessionCookie(response, result.sessionToken);
+      return result.user;
+    } catch (error) {
+      if (error instanceof AlreadyRegisteredError) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'ALREADY_REGISTERED',
+          field: error.field,
+          message: error.message,
+        });
+      }
+      if (isUniqueViolation(error)) {
+        // Two sign-ups with the same detail at the same moment: the index let one in.
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'ALREADY_REGISTERED',
+          message: 'These details are already registered',
+        });
+      }
+      throw error;
+    }
   }
 
   private setSessionCookie(response: Response, token: string) {

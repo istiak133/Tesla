@@ -1,15 +1,42 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { EnvironmentVariables } from '../config/env.validation.js';
-import { UsersRepository } from '../users/users.repository.js';
+import type { IdDocumentType, Role, User } from '../generated/prisma/client.js';
 import {
-  EmailAlreadyRegisteredError,
+  type NewDriverDetails,
+  type NewUser,
+  UsersRepository,
+} from '../users/users.repository.js';
+import {
+  AlreadyRegisteredError,
   InvalidCredentialsError,
+  WrongAccountTypeError,
 } from './auth.errors.js';
 import { PublicUser, toPublicUser } from './auth.types.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { generateSessionToken, hashSessionToken } from './session-token.js';
 import { SessionsRepository } from './sessions.repository.js';
+
+/** Sign-up details, already tidied and checked by the DTO (D-015). */
+export type SignupInput = {
+  name: string;
+  email: string;
+  phone: string;
+  password: string;
+  presentAddress: string;
+  permanentAddress: string;
+};
+
+export type DriverSignupInput = SignupInput & {
+  idType: IdDocumentType;
+  idNumber: string;
+  licenceNumber: string;
+  vehicleName: string;
+  plateNumber: string;
+};
+
+// Every Tesla in the pool offers three passenger seats (docs/assumptions.md).
+export const DRIVER_VEHICLE_SEATS = 3;
 
 export type LoginResult = {
   user: PublicUser;
@@ -25,33 +52,41 @@ export class AuthService {
     private readonly config: ConfigService<EnvironmentVariables, true>,
   ) {}
 
-  /** Creates a passenger account and logs it in. Drivers are created by the seed. */
-  async signup(
-    name: string,
+  /** Creates a passenger account and logs it in. */
+  async signupPassenger(input: SignupInput): Promise<LoginResult> {
+    const user = await this.newUser(input);
+    await this.refuseRegistered(user);
+    // If two sign-ups with the same details race past the check above,
+    // a unique index makes the second insert fail (see AuthController).
+    const created = await this.usersRepository.createPassenger(user);
+    return this.loggedIn(created);
+  }
+
+  /** Creates a driver account with their documents and vehicle, and logs it in (D-015). */
+  async signupDriver(input: DriverSignupInput): Promise<LoginResult> {
+    const user = await this.newUser(input);
+    const driver = {
+      idType: input.idType,
+      idNumber: input.idNumber,
+      licenceNumber: input.licenceNumber,
+      vehicleName: input.vehicleName,
+      plateNumber: input.plateNumber,
+      seatCapacity: DRIVER_VEHICLE_SEATS,
+    };
+    await this.refuseRegistered(user, driver);
+    const created = await this.usersRepository.createDriver(user, driver);
+    return this.loggedIn(created);
+  }
+
+  /**
+   * Logs in only with the account type chosen on the login page. The type is compared
+   * after the password, so a wrong type tells nothing to someone without the password.
+   */
+  async login(
+    role: Role,
     email: string,
     password: string,
   ): Promise<LoginResult> {
-    const normalizedEmail = normalizeEmail(email);
-
-    const existing = await this.usersRepository.findByEmail(normalizedEmail);
-    if (existing !== null) {
-      throw new EmailAlreadyRegisteredError();
-    }
-
-    const passwordHash = await hashPassword(password);
-    // If two sign-ups with the same email race past the check above,
-    // the unique index on users.email makes the second insert fail (see AuthController).
-    const user = await this.usersRepository.createPassenger({
-      name: name.trim(),
-      email: normalizedEmail,
-      passwordHash,
-    });
-
-    const sessionToken = await this.startSession(user.id);
-    return { user: toPublicUser(user), sessionToken };
-  }
-
-  async login(email: string, password: string): Promise<LoginResult> {
     const user = await this.usersRepository.findByEmail(normalizeEmail(email));
     if (user === null) {
       throw new InvalidCredentialsError();
@@ -61,13 +96,41 @@ export class AuthService {
     if (!passwordMatches) {
       throw new InvalidCredentialsError();
     }
+    if (user.role !== role) {
+      throw new WrongAccountTypeError(user.role);
+    }
 
-    const sessionToken = await this.startSession(user.id);
-    return { user: toPublicUser(user), sessionToken };
+    return this.loggedIn(user);
   }
 
   async logout(sessionToken: string): Promise<void> {
     await this.sessionsRepository.deleteByToken(hashSessionToken(sessionToken));
+  }
+
+  private async newUser(input: SignupInput): Promise<NewUser> {
+    return {
+      name: input.name,
+      email: normalizeEmail(input.email),
+      phone: input.phone,
+      passwordHash: await hashPassword(input.password),
+      presentAddress: input.presentAddress,
+      permanentAddress: input.permanentAddress,
+    };
+  }
+
+  private async refuseRegistered(
+    user: NewUser,
+    driver?: NewDriverDetails,
+  ): Promise<void> {
+    const taken = await this.usersRepository.findRegisteredField(user, driver);
+    if (taken !== null) {
+      throw new AlreadyRegisteredError(taken);
+    }
+  }
+
+  private async loggedIn(user: User): Promise<LoginResult> {
+    const sessionToken = await this.startSession(user.id);
+    return { user: toPublicUser(user), sessionToken };
   }
 
   private async startSession(userId: string): Promise<string> {
