@@ -5,6 +5,8 @@ passengers can share one vehicle without ever exceeding its seats.
 
 ## System overview
 
+Full layered diagram with the numbered happy path: [`architecture-diagram.pdf`](architecture-diagram.pdf) (also [PNG](architecture-diagram.png) and [SVG](architecture-diagram.svg)).
+
 ```mermaid
 flowchart LR
     B[Browser] -->|HTTPS, same origin| W[Next.js web app<br/>App Router · TanStack Query]
