@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { tripEarnings } from '../fares/earnings.js';
 import {
   GeographyRepository,
   type DistanceLookup,
@@ -212,8 +213,8 @@ export class PoolingService {
   }
 
   /**
-   * Ends a pool that has nobody left in it: COMPLETED if anyone was ever picked up,
-   * CANCELLED if the car never carried anyone.
+   * Ends a pool that has nobody left in it: CANCELLED if the car never carried anyone,
+   * otherwise COMPLETED with the money split locked (docs/assumptions.md §7.2).
    */
   async closeIfEmpty(tx: Tx, poolId: string): Promise<void> {
     const remaining = await tx.poolMember.count({
@@ -223,12 +224,36 @@ export class PoolingService {
       return;
     }
     const pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
+    if (pool.startedAt === null) {
+      await tx.pool.update({
+        where: { id: poolId },
+        data: { status: RideStatus.CANCELLED, endedAt: new Date() },
+      });
+      return;
+    }
+
+    // Everyone who was carried, with the fare locked at their drop-off.
+    const carried = await tx.poolMember.findMany({
+      where: { poolId, rideRequest: { status: RideStatus.COMPLETED } },
+      include: { rideRequest: true },
+    });
+    const stops = await this.ridesRepository.findRouteStops(tx, pool.routeId);
+    const earnings = tripEarnings(
+      stops,
+      carried.map((member) => ({
+        pickupStop: member.pickupStop,
+        dropoffStop: member.dropoffStop,
+        farePaisa: member.rideRequest.finalFarePaisa ?? 0,
+      })),
+    );
     await tx.pool.update({
       where: { id: poolId },
       data: {
-        status:
-          pool.startedAt === null ? RideStatus.CANCELLED : RideStatus.COMPLETED,
+        status: RideStatus.COMPLETED,
         endedAt: new Date(),
+        collectedPaisa: earnings.collectedPaisa,
+        driverEarningsPaisa: earnings.driverPaisa,
+        platformFeePaisa: earnings.platformPaisa,
       },
     });
   }

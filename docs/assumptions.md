@@ -112,7 +112,8 @@ Tesla Pool drives **three fixed lines**, each in both directions, so there are *
 
 **Rules**
 - Every zone is on at least one route.
-- A ride can be requested only if some route passes the pickup **and then** the destination. Anything else is refused with `400 NO_ROUTE`, and the web app only offers reachable destinations.
+- A ride can be requested only if some route passes the pickup **and then** the destination, **without going too far round**: riding the route may add at most **2 km, or 40%**, to the direct distance, whichever allows more. Anything else is refused with `400 NO_ROUTE`, and the web app only offers these destinations (`GET /zones/:id/destinations`).
+- Example: Rafiq's Banani → Mohakhali → Gulshan 1 is 6 km for a 4 km trip (+2 km, allowed); Uttara → Bashundhara on Airport Road is 24 km for 9 km (not sold). 72 of the 102 zone pairs a route passes are sold.
 - Routes decide **who can share a car**. They do not change the price: each passenger pays for their own direct distance (§7).
 
 ---
@@ -125,7 +126,7 @@ A ride request may join a pool only when **all four** conditions hold. They are 
 
 | # | Condition | Check |
 |---|---|---|
-| R1 | **On the route, in its direction** | the route has the pickup and the drop-off, and `pickupStop < dropoffStop` |
+| R1 | **On the route, in its direction, not too far round** | the route has the pickup and the drop-off, `pickupStop < dropoffStop`, and route km ≤ direct km + 2 or ≤ 140% of it |
 | R2 | **The car has not passed the pickup** | `pickupStop ≥ pool.currentStop` |
 | R3 | **Seats available** | `pool.seatsTaken + request.seats ≤ pool.seatCapacity` |
 | R4 | **Pool is active** | `pool.status ∈ {MATCHED, DRIVER_ARRIVED, STARTED}` and the driver is online |
@@ -304,6 +305,24 @@ passengerFare = subtotal − poolDiscount
 | Shirin | Mohakhali → Bashundhara, 7 km | ৳135 | Rafiq (Mohakhali → Gulshan 1) | **৳108** |
 | Nusrat alone | Banani → Mohakhali | ৳75 | nobody | **৳75** |
 
+### 7.2 Who Gets What: Passenger, Driver, Platform
+
+The three parties are paid separately (`api/src/fares/earnings.ts`, decision D-010). The discount is paid for by the extra passengers, never by the driver.
+
+| Party | Rule |
+|---|---|
+| **Passenger pays** | The fare above, in cash to the driver at drop-off. |
+| **Driver earns** | **৳10 per km** the car drives with at least one passenger on board (each hop counted once) **+ ৳20 per passenger picked up**. It does not depend on fares or discounts. |
+| **Platform keeps** | Collected fares − driver earnings: a fee the driver owes, as with cash rides on ride-hailing apps. |
+
+| Trip | Collected | Driver | Platform |
+|---|---:|---:|---:|
+| Nusrat alone (3 km, 1 pickup) | ৳75 | ৳50 | ৳25 |
+| Nusrat + Rafiq (6 km carried, 2 pickups) | ৳132 | ৳100 | ৳32 |
+| Nusrat, Rafiq, Shirin (12 km carried, 3 pickups) | ৳240 | ৳180 | ৳60 |
+
+**Guarantee:** a unit test runs every trip the six routes can sell, alone and in every group of up to three bookings. The platform keeps at least ৳10 in every case (about 25,000 cases). The split is locked when the trip completes, and the database checks that `collected = driver + platform`.
+
 ---
 
 ## 8. Users, Vehicles & Access
@@ -363,5 +382,7 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-15 | Payment is cash only. | [7](#7-fare--payment) |
 | A-18 | The system suggests a route from the car's zone and the waiting demand; the driver chooses. | [4.6](#46-route-suggestion) |
 | A-19 | No seat hold: a fitting request takes its seat at once (auto-join); the driver does not confirm each join. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-20 | A route sells a trip only if it adds at most 2 km, or 40%, to the direct distance. | [3.3](#33-routes) |
+| A-21 | The driver earns ৳10 per carried km + ৳20 per pickup; the platform keeps the rest of the fares. | [7.2](#72-who-gets-what-passenger-driver-platform) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
 | A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |

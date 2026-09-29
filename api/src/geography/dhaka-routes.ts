@@ -1,6 +1,7 @@
 // The fixed Tesla routes from docs/assumptions.md §3.3. Used by the seed.
 // Each route is driven in both directions; the seed stores each direction as its own
 // route, so a stop's position always grows in the direction of travel.
+import { DISTANCE_KM, ZONES } from './dhaka-zones.js';
 
 export type RouteLine = { stops: string[] }; // zone codes, in order
 
@@ -24,4 +25,15 @@ export function routeDirections(): { code: string; stops: string[] }[] {
     }
   }
   return routes;
+}
+
+/** For each stop, the km driven from the route's first stop (hop distances added up). */
+export function kmFromStart(stops: string[]): number[] {
+  const indexOf = (code: string) =>
+    ZONES.findIndex((zone) => zone.code === code);
+  const km = [0];
+  for (let i = 1; i < stops.length; i++) {
+    km.push(km[i - 1] + DISTANCE_KM[indexOf(stops[i - 1])][indexOf(stops[i])]);
+  }
+  return km;
 }

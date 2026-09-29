@@ -110,7 +110,9 @@ describe('Trip lifecycle (e2e)', () => {
     expect(trips.body[0]).toMatchObject({
       status: 'COMPLETED',
       route: 'Uttara → Bashundhara',
-      totalFarePaisa: 13200, // ৳60 + ৳72
+      collectedPaisa: 13200, // ৳60 + ৳72 in cash
+      driverEarningsPaisa: 10000, // 6 km × ৳10 + 2 pickups × ৳20
+      platformFeePaisa: 3200, // the rest
     });
     expect(trips.body[0].passengers).toHaveLength(2);
   });
@@ -266,6 +268,32 @@ describe('Trip lifecycle (e2e)', () => {
     // Both are waiting again, and Jashim can accept them into a fresh trip.
     const waiting = await jashim.get('/driver/requests');
     expect(waiting.body).toHaveLength(2);
+  });
+
+  it('a passenger cancelling while the driver cancels the trip always gets a clean answer', async () => {
+    // Race both ways several times: whichever wins, Nusrat ends CANCELLED with a 200,
+    // never a wrong 409, and Rafiq is back to waiting.
+    for (let round = 0; round < 5; round++) {
+      await resetDatabase(app);
+      await seedStoryCast(app);
+      BAN = await zoneId(app, 'BAN');
+      MOH = await zoneId(app, 'MOH');
+      GL1 = await zoneId(app, 'GL1');
+      const { jashim, nusrat, rafiq, nusratRideId } =
+        await nusratAndRafiqPooled();
+
+      const [passengerCancel, driverCancel] = await Promise.all([
+        nusrat.post(`/rides/${nusratRideId}/cancel`),
+        jashim.post('/driver/pool/cancel'),
+      ]);
+
+      expect(passengerCancel.status).toBe(200);
+      expect(passengerCancel.body.status).toBe('CANCELLED');
+      expect(driverCancel.status).toBe(200);
+      expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
+        'REQUESTED',
+      );
+    }
   });
 
   it('a driver cannot cancel once someone has been picked up', async () => {

@@ -1,11 +1,11 @@
 // Route suggestion for drivers (docs/assumptions.md §4.6). Pure functions, no database.
 //
 // The system suggests, the driver decides. For each route we count the waiting requests
-// the car could still serve from where it is now: the route passes the rider's pickup
-// and then their destination, and the pickup is at or after the car's zone.
+// the car could still serve from where it is now: the route can carry the trip (R1)
+// and the pickup is at or after the car's zone.
 // The best route that passes the car's zone is the suggestion.
 
-import { tripStops, type Stop } from './route-plan.js';
+import { servesTrip, tripStops, type Stop } from './route-plan.js';
 
 export type RouteForSuggestion = {
   id: string;
@@ -14,7 +14,11 @@ export type RouteForSuggestion = {
   stops: Stop[];
 };
 
-export type WaitingTrip = { pickupZoneId: string; dropoffZoneId: string };
+export type WaitingTrip = {
+  pickupZoneId: string;
+  dropoffZoneId: string;
+  distanceKm: number;
+};
 
 export type RankedRoute = {
   routeId: string;
@@ -36,8 +40,11 @@ export function rankRoutes(
 
     let waitingAhead = 0;
     for (const trip of waiting) {
-      const positions = tripStops(route.stops, trip);
-      if (positions !== null && positions.pickupStop >= from) {
+      if (!servesTrip(route.stops, trip)) {
+        continue;
+      }
+      const positions = tripStops(route.stops, trip)!;
+      if (positions.pickupStop >= from) {
         waitingAhead++;
       }
     }

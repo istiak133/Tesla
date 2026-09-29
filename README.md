@@ -36,6 +36,7 @@ explain afterwards exactly what happened.
 - Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with twenty riders racing for the last seat, and "the car leaves a stop" vs "a passenger joins at that stop" tested as a race
 - Trip driven stop by stop: arrive → picked up / drop off / no-show → leave for the next stop. Each passenger gets on and off at their own stop; seats are freed at drop-off
 - Fares locked at drop-off: 20% off if another passenger shared at least one hop
+- Driver earnings by the work (৳10/km carried + ৳20/pickup), platform fee = the rest; shown per trip to the driver, never negative for anyone
 - Passenger cancellation until pickup; the driver can cancel before the first pickup (passengers go back to waiting); an empty trip closes itself
 - Invalid transitions rejected with 409; every passenger status change recorded in the ride history
 - Web app for passengers and drivers: the route drawn with the car on it, live status (polling every 3 s), loading / error / empty states, demo-account buttons on the login page
@@ -49,6 +50,10 @@ explain afterwards exactly what happened.
 | Jashim at Mohakhali: Nusrat gets off, Shirin gets on | Nusrat paid ৳60 for sharing a hop |
 |---|---|
 | ![Driver pool](docs/screenshots/driver-pool.png) | ![Fare locked](docs/screenshots/passenger-fare-locked.png) |
+
+| Suggested route from where the car is | After the trip: Jashim earned ৳180 of ৳240 |
+|---|---|
+| ![Route suggestion](docs/screenshots/driver-route-suggestion.png) | ![Driver earnings](docs/screenshots/driver-earnings.png) |
 
 ## Architecture
 
@@ -193,6 +198,7 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | GET | `/auth/me` | The logged-in user |
 | GET | `/zones` | The 14 zones for pickup and destination |
 | GET | `/routes` | The six routes with their stops in driving order |
+| GET | `/zones/:id/destinations` | Where a passenger can ride from this pickup (routes that are not too far round) |
 | POST | `/rides` | Passenger: request a ride `{pickupZoneId, dropoffZoneId, seats}`; `400 NO_ROUTE` if no route serves it; joins a Tesla on the way at once if one fits |
 | GET | `/rides/current` | Passenger: the active ride (driver, route with the car's position, co-riders' first names, fare, history) |
 | GET | `/rides` | Passenger: ride history |
@@ -205,7 +211,7 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |
 | POST | `/driver/requests/:id/accept` | Driver: accept (starts a trip on the route, or adds to the current one) |
 | GET | `/driver/pool` | Driver: vehicle, route and current trip with its stops and passengers |
-| GET | `/driver/trips` | Driver: past trips with passengers and fares |
+| GET | `/driver/trips` | Driver: past trips with passengers, cash collected, driver earnings and platform fee |
 | POST | `/driver/pool/arrive`, `/driver/pool/depart` | Driver: arrive at the current stop; leave for the next one (409 while someone still waits here) |
 | POST | `/driver/pool/passengers/:rideId/pickup`, `/dropoff`, `/no-show` | Driver: one passenger at this stop; drop-off locks their fare |
 | POST | `/driver/pool/cancel` | Driver: cancel before the first pickup; passengers return to waiting |
@@ -227,6 +233,8 @@ More endpoints are added with each feature *(coming)*.
 | Shirin | Mohakhali → Bashundhara (joins on the way) | 7 | ৳135 | ৳108 |
 
 Taking over a seat at the stop where someone else got off is not sharing: both pay their solo fare.
+
+**Who gets the money.** The driver is paid for the work, not from the fares: **৳10 per km** with a passenger on board **+ ৳20 per pickup**. The platform keeps the rest. So a sharing discount never comes out of the driver's pocket: it is paid for by the extra passengers. For the story trip, ৳240 is collected, Jashim earns ৳180 and the platform keeps ৳60. Routes only sell trips that add at most 2 km or 40% to the direct distance, and a unit test checks every trip every route can sell: nobody loses money (see D-010 in [`decisions.md`](decisions.md)).
 
 Routes, matching rules (R1–R4) and every other assumption: [`docs/assumptions.md`](docs/assumptions.md).
 

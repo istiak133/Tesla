@@ -97,9 +97,10 @@ model Route {
 
 // The zones of a route in driving order. position 0 is the first stop.
 model RouteStop {
-  routeId  String @map("route_id") @db.Uuid
-  position Int
-  zoneId   String @map("zone_id") @db.Uuid
+  routeId     String @map("route_id") @db.Uuid
+  position    Int
+  zoneId      String @map("zone_id") @db.Uuid
+  kmFromStart Int    @map("km_from_start") // route km from the first stop to this one
 
   route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
   zone  Zone  @relation(fields: [zoneId], references: [id])
@@ -143,17 +144,21 @@ model Vehicle {
 // MATCHED = heading to the first pickup, DRIVER_ARRIVED = at current_stop,
 // STARTED = driving to current_stop, then COMPLETED or CANCELLED.
 model Pool {
-  id           String     @id @default(uuid()) @db.Uuid
-  vehicleId    String     @map("vehicle_id") @db.Uuid
-  routeId      String     @map("route_id") @db.Uuid
-  currentStop  Int        @map("current_stop") // position the vehicle is at or heading to
-  status       RideStatus @default(MATCHED)
+  id                  String     @id @default(uuid()) @db.Uuid
+  vehicleId           String     @map("vehicle_id") @db.Uuid
+  routeId             String     @map("route_id") @db.Uuid
+  currentStop         Int        @map("current_stop") // position the vehicle is at or heading to
+  status              RideStatus @default(MATCHED)
   // Copied from the vehicle when the pool is created, so the CHECK can compare two columns.
-  seatCapacity Int        @map("seat_capacity")
-  seatsTaken   Int        @default(0) @map("seats_taken")
-  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  startedAt    DateTime?  @map("started_at") @db.Timestamptz(6)
-  endedAt      DateTime?  @map("ended_at") @db.Timestamptz(6)
+  seatCapacity        Int        @map("seat_capacity")
+  seatsTaken          Int        @default(0) @map("seats_taken")
+  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  startedAt           DateTime?  @map("started_at") @db.Timestamptz(6)
+  endedAt             DateTime?  @map("ended_at") @db.Timestamptz(6)
+  // Who gets what, locked when the trip is COMPLETED (docs/assumptions.md §7.2).
+  collectedPaisa      Int?       @map("collected_paisa") // all final fares, paid in cash
+  driverEarningsPaisa Int?       @map("driver_earnings_paisa") // ৳10/km carried + ৳20/pickup
+  platformFeePaisa    Int?       @map("platform_fee_paisa") // collected − driver earnings
 
   vehicle Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
   route   Route        @relation(fields: [routeId], references: [id])

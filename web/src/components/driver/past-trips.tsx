@@ -13,8 +13,26 @@ export function PastTrips() {
     refetchInterval: 10000,
   });
 
+  // Totals over the trips listed: what the driver keeps and what is owed to the platform.
+  let earned = 0;
+  let fees = 0;
+  for (const trip of trips.data ?? []) {
+    earned += trip.driverEarningsPaisa ?? 0;
+    fees += trip.platformFeePaisa ?? 0;
+  }
+
   return (
-    <Card title="Past trips">
+    <Card
+      title="Past trips"
+      action={
+        earned > 0 ? (
+          <p className="text-sm text-zinc-600">
+            Earned <span className="font-medium">{taka(earned)}</span> ·
+            platform fee owed {taka(fees)}
+          </p>
+        ) : undefined
+      }
+    >
       {trips.isPending && <Loading />}
       {trips.isError && <ErrorNote message={trips.error.message} />}
       {trips.data && trips.data.length === 0 && (
@@ -40,10 +58,16 @@ export function PastTrips() {
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  {trip.status === "COMPLETED" && (
-                    <span className="font-medium">
-                      {taka(trip.totalFarePaisa)}
-                    </span>
+                  {trip.driverEarningsPaisa !== null && (
+                    <div className="text-right">
+                      <p className="font-medium">
+                        You earned {taka(trip.driverEarningsPaisa)}
+                      </p>
+                      <p className="text-xs text-zinc-500">
+                        {taka(trip.collectedPaisa ?? 0)} cash · platform fee{" "}
+                        {taka(trip.platformFeePaisa ?? 0)}
+                      </p>
+                    </div>
                   )}
                   <StatusBadge status={trip.status} />
                 </div>

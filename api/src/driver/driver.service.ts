@@ -4,7 +4,7 @@ import {
   toStops,
 } from '../geography/geography.repository.js';
 import { RideStatus, Vehicle } from '../generated/prisma/client.js';
-import { joinProblem, tripStops } from '../pooling/route-plan.js';
+import { joinProblem, routeProblem, tripStops } from '../pooling/route-plan.js';
 import {
   rankRoutes,
   suggestedRoute,
@@ -192,8 +192,8 @@ export class DriverService {
         reason = 'Needs more seats than your vehicle has';
       } else if (pool !== null) {
         reason = joinProblem(pool, stops, ride)?.message ?? null;
-      } else if (tripStops(stops, ride) === null) {
-        reason = `Not on your route (${route.name})`;
+      } else if (routeProblem(stops, ride) !== null) {
+        reason = `${routeProblem(stops, ride)} (your route: ${route.name})`;
       }
 
       return {
@@ -251,13 +251,11 @@ export class DriverService {
           tx,
           lockedVehicle.routeId,
         );
-        const positions = tripStops(stops, ride);
-        if (positions === null) {
-          throw new RideError(
-            'NOT_COMPATIBLE',
-            'Not on your route in this direction',
-          );
+        const problem = routeProblem(stops, ride);
+        if (problem !== null) {
+          throw new RideError('NOT_COMPATIBLE', problem);
         }
+        const positions = tripStops(stops, ride)!;
         pool = await tx.pool.create({
           data: {
             vehicleId: vehicle.id,
@@ -290,10 +288,6 @@ export class DriverService {
       const riders = pool.members.filter(
         (member) => member.rideRequest.status === RideStatus.COMPLETED,
       );
-      let totalFarePaisa = 0;
-      for (const rider of riders) {
-        totalFarePaisa += rider.rideRequest.finalFarePaisa ?? 0;
-      }
 
       return {
         id: pool.id,
@@ -301,7 +295,10 @@ export class DriverService {
         route: pool.route.name,
         startedAt: pool.startedAt,
         endedAt: pool.endedAt,
-        totalFarePaisa,
+        // The money split, locked when the trip completed (null for a cancelled trip).
+        collectedPaisa: pool.collectedPaisa,
+        driverEarningsPaisa: pool.driverEarningsPaisa,
+        platformFeePaisa: pool.platformFeePaisa,
         passengers: riders.map((rider) => ({
           name: firstName(rider.rideRequest.passenger.name),
           pickup: rider.rideRequest.pickupZone.name,

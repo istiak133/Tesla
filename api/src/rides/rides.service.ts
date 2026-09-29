@@ -5,7 +5,7 @@ import {
   toStops,
 } from '../geography/geography.repository.js';
 import { Prisma, RideStatus } from '../generated/prisma/client.js';
-import { tripStops } from '../pooling/route-plan.js';
+import { servesTrip } from '../pooling/route-plan.js';
 import { PoolingService } from './pooling.service.js';
 import { RideError } from './ride.errors.js';
 import { RideView, toRideView } from './ride.views.js';
@@ -40,11 +40,14 @@ export class RidesService {
       throw new RideError('INVALID_ZONE', 'Unknown zone');
     }
 
-    // Tesla Pool only drives its fixed routes (docs/assumptions.md §3.3).
+    const distance = await this.poolingService.distance();
+    const distanceKm = distance(pickupZoneId, dropoffZoneId);
+
+    // Tesla Pool only drives its fixed routes, and only sells trips a route carries
+    // without going too far round (docs/assumptions.md §3.3).
     const routes = await this.geographyRepository.listRoutes();
-    const served = routes.some(
-      (route) =>
-        tripStops(toStops(route), { pickupZoneId, dropoffZoneId }) !== null,
+    const served = routes.some((route) =>
+      servesTrip(toStops(route), { pickupZoneId, dropoffZoneId, distanceKm }),
     );
     if (!served) {
       throw new RideError(
@@ -52,9 +55,6 @@ export class RidesService {
         'No Tesla route goes from this pickup to this destination yet',
       );
     }
-
-    const distance = await this.poolingService.distance();
-    const distanceKm = distance(pickupZoneId, dropoffZoneId);
 
     let ride;
     try {
@@ -119,8 +119,16 @@ export class RidesService {
     }));
   }
 
-  /** Passenger cancel: allowed until the passenger is picked up (docs/assumptions.md §6.1). */
-  async cancelRide(passengerId: string, rideId: string): Promise<RideView> {
+  /**
+   * Passenger cancel: allowed until the passenger is picked up (docs/assumptions.md §6.1).
+   * The ride can change while we reach the lock (the driver cancels the trip, or it joins
+   * another car), so everything is checked again under the lock, with one retry.
+   */
+  async cancelRide(
+    passengerId: string,
+    rideId: string,
+    attempt = 1,
+  ): Promise<RideView> {
     const ride = await this.ridesRepository.findRide(rideId);
     if (ride === null) {
       throw new RideError('NOT_FOUND', 'Ride not found');
@@ -148,31 +156,61 @@ export class RidesService {
       );
     }
 
-    await this.ridesRepository.withVehicleLock(
-      membership.pool.vehicleId,
+    const vehicleId = membership.pool.vehicleId;
+    const outcome = await this.ridesRepository.withVehicleLock(
+      vehicleId,
       async (tx) => {
         const current = await tx.rideRequest.findUniqueOrThrow({
           where: { id: rideId },
         });
-        const cancellable: RideStatus[] = [
-          RideStatus.MATCHED,
-          RideStatus.DRIVER_ARRIVED,
-        ];
-        if (!cancellable.includes(current.status)) {
+
+        // The driver cancelled the trip a moment ago: the ride is waiting again.
+        if (current.status === RideStatus.REQUESTED) {
+          await this.ridesRepository.cancelIfWaiting(tx, rideId, passengerId);
+          return 'done';
+        }
+        if (current.status === RideStatus.STARTED) {
           throw new RideError(
             'INVALID_TRANSITION',
             'A ride cannot be cancelled after pickup',
           );
         }
+        if (
+          current.status !== RideStatus.MATCHED &&
+          current.status !== RideStatus.DRIVER_ARRIVED
+        ) {
+          throw new RideError(
+            'INVALID_TRANSITION',
+            'This ride can no longer be cancelled',
+          );
+        }
+
+        // The seat must still be in this vehicle's trip (the one we locked).
+        const seat = await tx.poolMember.findFirst({
+          where: { rideRequestId: rideId, leftAt: null },
+          include: { pool: true },
+        });
+        if (seat === null || seat.pool.vehicleId !== vehicleId) {
+          return 'moved';
+        }
         await this.poolingService.leaveUnderLock(
           tx,
-          membership.poolId,
+          seat.poolId,
           current,
           passengerId,
           'Passenger cancelled',
         );
+        return 'done';
       },
     );
+
+    if (outcome === 'moved') {
+      // It joined another car in the meantime: try once more with that car's lock.
+      if (attempt === 1) {
+        return this.cancelRide(passengerId, rideId, 2);
+      }
+      throw new RideError('BUSY', 'The ride just changed, please try again');
+    }
     return this.getRide(passengerId, rideId);
   }
 }
