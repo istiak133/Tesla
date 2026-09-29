@@ -61,6 +61,7 @@ Details and reasoning for each entry are further down in this file.
 | Joins after start | Allowed from stops ahead (option C) → deferred (D-003) | Allowed from any stop ahead until the seats are full; seats freed at drop-off (D-008) | Implemented (tested: join on the way, passed stop refused, depart vs join race) |
 | Status model | Per-passenger states → one shared set for the whole pool (D-003) | Same status names, per passenger: MATCHED → DRIVER_ARRIVED (car at their stop) → STARTED (on board) → COMPLETED (dropped off); pool status + `current_stop` say where the car is (D-008) | Implemented (`TripService`: arrive, pickup, dropoff, no-show, depart, cancel) |
 | Fare | ৳30 + ৳20 per hop, locked at request → −20% if 2+ passengers at STARTED, locked at STARTED (D-003) | (৳30 + direct km × ৳15) × seats; −20% if another passenger shared at least one hop; estimate = solo price (never exceeded); locked at drop-off (D-008) | Implemented (tested ৳60 / ৳72 / ৳108 shared, ৳75 alone, ৳75 when a seat is only handed over) |
+| Who gets the money | Driver keeps all cash; the discount came out of the driver's pocket; no platform revenue | Driver paid for the work (৳10/km carried + ৳20/pickup); platform keeps the rest; routes may not go more than +2 km or +40% round (D-010) | Implemented (every trip on every route checked: platform ≥ ৳10, driver never pays for a discount) |
 | Ride types | SHARED / SOLO chosen by the passenger | No ride type; every ride can be pooled | Implemented |
 | Money storage | Integer paisa | Integer paisa (unchanged) | Implemented |
 | Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status. Rule added: inside the lock only the transaction's connection is used (found by the race test) | Implemented (tested: 20 riders racing for the last seat, 10/10 runs) |
@@ -590,3 +591,66 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - A fitting request takes its seat at once (auto-join) or when the driver accepts a waiting one. The driver does not confirm each join.
 - **Why:** in en-route pooling the driver is driving between stops; asking them to confirm every join within 60 s is unsafe and slow, and the rider waits without knowing. Holds would also bring back a HELD state, expiry clean-up under the lock and races B3/C1-with-holds.
 - **Driver control that remains:** choosing the route (with the suggestion), accepting waiting requests, marking no-shows, cancelling before the first pickup, going offline between trips. A "pause new joins" switch is a next improvement if drivers ask for it.
+
+
+---
+
+# Fare Economics: Passenger, Driver and Platform
+
+## D-010: Who pays, who earns, who keeps (2026-09-29)
+
+**The problem (his point: "the discount must not become the driver's loss; the passenger, the driver and the owner must all come out ahead").** Until now the passenger's whole cash fare went to the driver, so the 20% sharing discount came straight out of the driver's earnings, and the platform earned nothing. Checking every trip also showed a hidden flaw: some routes go far round (Uttara → Bashundhara on Airport Road drives 24 km for a 9 km trip), so a per-km cost could be far above the fare.
+
+**Principle:** the three parties are paid separately. The discount is paid for by the extra passengers in the car, never by the driver.
+
+| Party | Rule | Code |
+|---|---|---|
+| **Passenger pays** | `(৳30 + direct km × ৳15) × seats`; −20% if another passenger shared at least one hop; locked at drop-off; never above the estimate shown at request (unchanged from D-008) | `fares/fare.ts` |
+| **Driver earns** | ৳10 per km the car drives with at least one passenger on board (each hop once) + ৳20 per passenger picked up. Independent of fares and discounts: more riders = more pickups = more pay | `fares/earnings.ts` |
+| **Platform keeps** | collected − driver earnings. Cash goes to the driver; the platform's share is a fee the driver owes (as with cash rides on Pathao or Uber) | `fares/earnings.ts` |
+| **Route fit (R1)** | A route sells a trip only if riding it adds at most **2 km, or 40%**, to the direct distance, whichever allows more. Protects the passenger's time and the platform's margin | `pooling/route-plan.ts` (`routeProblem`) |
+
+**Numbers (hand-checkable):**
+
+| Trip | Collected | Driver | Platform |
+|---|---:|---:|---:|
+| Nusrat alone, Banani → Mohakhali (3 km, 1 pickup) | ৳75 | ৳50 | ৳25 |
+| Nusrat + Rafiq (6 km carried, 2 pickups) | ৳132 | ৳100 | ৳32 |
+| The story: Nusrat, Rafiq, Shirin (12 km, 3 pickups) | ৳240 | ৳180 (75%) | ৳60 (25%) |
+
+**Proof, not a promise:** `fares/earnings.spec.ts` runs every trip each of the six routes can sell, alone and in every group of up to 3 bookings (1–3 seats, within Bullet's 3 seats), about 25,000 cases. The platform keeps at least ৳10 in every one. Changing a rate so that any trip loses money makes the test fail.
+
+**Options considered:**
+- (a) Keep "driver keeps all cash": no platform revenue, and the discount is the driver's loss. Rejected.
+- (b) Platform commission (e.g. 20% of each fare): simple, but the driver still carries 80% of every discount. Rejected.
+- (c) **Picked:** decouple. Passenger price by their own trip, driver pay by the vehicle's work, platform keeps the difference. This is how ride-hailing platforms pay drivers on shared rides (distance and pickups, not the discounted fares).
+- Detour cap: ×1.4 alone was first proposed, but it would drop Rafiq's Banani → Gulshan 1 (6 km for 4 km, the PRD story). "+2 km or +40%, whichever is more" keeps the story, sells 72 of 102 zone pairs (the rest need more routes), and keeps every trip profitable. ×1.5 sold 80 pairs but forced the pickup pay down to ৳10.
+
+**Stored:** a completed pool locks `collected_paisa`, `driver_earnings_paisa` and `platform_fee_paisa` in the same transaction as the last drop-off (`PoolingService.closeIfEmpty`). Database CHECKs: amounts are never negative for the passenger or the driver, and `collected = driver + platform` always holds. `route_stops.km_from_start` gives the km between any two stops (filled from the distance table by the migration and the seed).
+
+**Shown:** the driver's past trips show "You earned ৳180 · ৳240 cash · platform fee ৳60" and a running total of earnings and fees owed. The passenger screen is unchanged.
+
+**Honest limits and next steps:**
+- Driving to the first pickup and empty stretches between passengers are not paid (as on most platforms); a small "dead km" rate is a next improvement.
+- No time component (waiting in traffic), no surge, no driver incentives; real platforms add a per-minute rate, which needs live trip times.
+- Payment stays cash; with a TeslaPay wallet the platform fee would be deducted automatically (H4 applies).
+- More routes would bring back the 30 zone pairs that are too far round today.
+
+## D-011: Integration audit (2026-09-29)
+
+**Why:** after en-route pooling, route suggestion and the fare economics, check the whole backend as one system: passengers, the driver and the pool together.
+
+**Found and fixed:** passenger cancel racing a driver's trip cancel. If the driver's cancel won, the ride was already back to REQUESTED when the passenger's cancel took the lock, and the passenger got a wrong `409 "cannot be cancelled after pickup"`. The same gap could lock the wrong vehicle if the ride joined another car in between. Now everything is re-read under the lock: a waiting ride is cancelled there (compare-and-set), a seat that moved to another car is retried once with that car's lock, and each status gets its own message. Tested by racing both cancels five times.
+
+**Added:** `test/full-journey.e2e-spec.ts`, one morning on Airport Road through the HTTP API only:
+- sign-up, route suggestion, accept and auto-join
+- a trip in the wrong direction refused
+- joining on the way, the car full ("1 seat(s) short"), and a seat freed at drop-off taken by an accept
+- a no-show
+- every stop action and wrong-order refusal
+- fares ৳60 / ৳72 / ৳108
+- the event history
+- the money split ৳240 = ৳180 + ৳60
+- the next suggestion from Bashundhara, logout
+
+**Verified live:** the same story through the browser → Next.js proxy → API → PostgreSQL in Docker (`docker compose up --build`). The database then held one COMPLETED pool with 24000 / 18000 / 6000 paisa and the car at Bashundhara.
