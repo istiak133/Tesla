@@ -63,9 +63,11 @@ Details and reasoning for each entry are further down in this file.
 | Fare | ৳30 + ৳20 per hop, locked at request → −20% if 2+ passengers at STARTED, locked at STARTED (D-003) | (৳30 + direct km × ৳15) × seats; −20% if another passenger shared at least one hop; estimate = solo price (never exceeded); locked at drop-off (D-008) | Implemented (tested ৳60 / ৳72 / ৳108 shared, ৳75 alone, ৳75 when a seat is only handed over) |
 | Ride types | SHARED / SOLO chosen by the passenger | No ride type; every ride can be pooled | Implemented |
 | Money storage | Integer paisa | Integer paisa (unchanged) | Implemented |
-| Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status. Rule added: inside the lock only the transaction's connection is used (found by the race test) | Implemented (tested: 8 riders racing for the last seat, 10/10 runs) |
+| Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status. Rule added: inside the lock only the transaction's connection is used (found by the race test) | Implemented (tested: 20 riders racing for the last seat, 10/10 runs) |
 | Idempotency key (double tap) | E6 + G11 | Kept as a design, not built for the MVP | Deferred |
-| Seat hold, request expiry | E1, Y | Kept as designs, not built for the MVP | Deferred |
+| Seat hold (Y) | Driver confirms every join within 60 s | Rejected for en-route pooling: a fitting request takes its seat at once (D-009) | Rejected |
+| Request expiry | E1 | Kept as a design, not built for the MVP | Deferred |
+| Route choice | System picks at the first accept (fewest hops) → driver picks (D-008) | System suggests from the car's zone and waiting demand, driver confirms with one tap (D-009) | Implemented (`route-suggestion.ts`, `GET /driver/routes`, `POST /driver/location`) |
 | No-show | E7 | Driver marks a waiting passenger as no-show at their stop; seat freed (D-008) | Implemented |
 | Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger until picked up; empty pool closes itself; driver before the first pickup → riders back to REQUESTED (D-008) | Implemented |
 | Payment | Cash only | Cash only (unchanged) | Planned |
@@ -575,3 +577,16 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 **Concurrency:** every action still runs inside the vehicle lock. The new race, "the car leaves Mohakhali" vs "Shirin joins at Mohakhali", is serialised by it: either Shirin gets in first and the car must wait for her, or the car leaves first and Mohakhali is behind it. The conditional seat update also checks `current_stop ≤ pickup_stop`, and new CHECKs keep `pickup_stop < dropoff_stop`. Tested in `test/pooling.e2e-spec.ts`.
 
 **Consequences:** a new migration (`add_routes_and_en_route_pooling`; required columns, so it needs a database without old pools); `detour.ts` replaced by `route-plan.ts`; new driver endpoints (`/driver/route`, `/driver/pool/depart`, `/driver/pool/passengers/:rideId/pickup|dropoff|no-show`; `start` and `complete` removed); the web app shows the route with the car on it for both roles. Docs and all four diagrams updated.
+
+## D-009: Route suggestion, and no seat hold (2026-09-29)
+
+**Route choice (his call: hybrid).** Options: (a) the driver picks freely; (b) the system assigns from the driver's location; (c) the system suggests, the driver confirms.
+- **Picked (c).** The vehicle keeps `current_zone`: the driver sets it once before the first trip, then every Arrive updates it. `rankRoutes()` counts, for each route, the waiting requests it could still serve from that zone (pickup at or after the car), puts routes through the car's zone first, and the best one is shown as **Suggested** with one tap. The driver can still choose another.
+- **Why not (b) now:** there is no live GPS (out of scope in the PRD), so "location" is what the driver says; forcing a route needs an accept/decline step and rebalancing rules (new states, new races). (c) gives the benefit, sending the car where riders are waiting, with none of that.
+- **Race safety:** route and location changes run inside the vehicle lock and are refused during a trip, as before.
+- **At scale:** automatic dispatch from GPS pings and a demand heatmap, with the driver accepting the assignment.
+
+**Seat hold (option Y) rejected (his question: hold vs direct assignment).**
+- A fitting request takes its seat at once (auto-join) or when the driver accepts a waiting one. The driver does not confirm each join.
+- **Why:** in en-route pooling the driver is driving between stops; asking them to confirm every join within 60 s is unsafe and slow, and the rider waits without knowing. Holds would also bring back a HELD state, expiry clean-up under the lock and races B3/C1-with-holds.
+- **Driver control that remains:** choosing the route (with the suggestion), accepting waiting requests, marking no-shows, cancelling before the first pickup, going offline between trips. A "pause new joins" switch is a next improvement if drivers ask for it.

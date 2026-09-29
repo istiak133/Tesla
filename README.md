@@ -32,8 +32,8 @@ explain afterwards exactly what happened.
 - Same-origin `/api` proxy from the web app to the API
 - One-command local run with Docker Compose, plus CI on every pull request
 - Ride requests with a solo fare estimate, only for trips a route serves; automatic join into the oldest Tesla that has not passed the pickup
-- Drivers pick a route, go online, see waiting requests (with the reason if they cannot take one, e.g. "The car has already passed Banani") and accept them
-- Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with eight riders racing for the last seat, and "the car leaves a stop" vs "a passenger joins at that stop" tested as a race
+- Drivers get a **suggested route** from where the car is and where riders are waiting (one tap to take it, or pick another), go online, see waiting requests (with the reason if they cannot take one, e.g. "The car has already passed Banani") and accept them
+- Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with twenty riders racing for the last seat, and "the car leaves a stop" vs "a passenger joins at that stop" tested as a race
 - Trip driven stop by stop: arrive → picked up / drop off / no-show → leave for the next stop. Each passenger gets on and off at their own stop; seats are freed at drop-off
 - Fares locked at drop-off: 20% off if another passenger shared at least one hop
 - Passenger cancellation until pickup; the driver can cancel before the first pickup (passengers go back to waiting); an empty trip closes itself
@@ -198,6 +198,8 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | GET | `/rides` | Passenger: ride history |
 | GET | `/rides/:id` | Passenger: one of my rides (403 for someone else's) |
 | POST | `/rides/:id/cancel` | Passenger: cancel until picked up |
+| GET | `/driver/routes` | Driver: every route ranked from the car's zone, with riders waiting ahead and the suggested one |
+| POST | `/driver/location` | Driver: where the car is `{zoneId}` (before a trip; stops update it after that) |
 | POST | `/driver/route` | Driver: choose the route `{routeId}` (only between trips) |
 | POST | `/driver/online`, `/driver/offline` | Driver: availability (a route is required; offline refused during a trip) |
 | GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |

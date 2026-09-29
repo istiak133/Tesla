@@ -172,6 +172,19 @@ flowchart TD
 | A passenger has at most **one active request**. | Prevents double-booking the same person. |
 | A driver must pick a route before going online, and cannot go offline with an active pool. | Passengers must not be abandoned mid-trip. |
 
+### 4.6 Route Suggestion
+
+The system suggests a route and the driver decides (`api/src/pooling/route-suggestion.ts`).
+
+| Step | Rule |
+|---|---|
+| Where the car is | `vehicles.current_zone`: set by the driver before the first trip, then updated automatically at every **Arrive**. It cannot be set by hand during a trip. |
+| Demand per route | Waiting requests the route could still serve from the car's zone: the route passes their pickup, then their destination, and the pickup is at or after the car. |
+| Ranking | Routes through the car's zone first, then most riders waiting, then route code. |
+| Suggestion | The best route through the car's zone, shown as **Suggested** with one tap to take it. No suggestion while the location is unknown. |
+
+Example: Jashim at Banani; Nusrat Banani → Dhanmondi and Rafiq Mohakhali → Farmgate wait on Banani → Dhanmondi, Shirin Banani → Gulshan 1 on Uttara → Bashundhara, so Banani → Dhanmondi is suggested (2 waiting). At scale this becomes automatic dispatch from GPS and demand; it is kept as advice here because there is no live location and the driver must agree to a route.
+
 ---
 
 ## 5. Ride Lifecycle
@@ -348,5 +361,7 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-13 | Money is stored as integer paisa. | [7](#7-fare--payment) |
 | A-14 | The 20% discount applies when another passenger shared at least one hop; direct distance is charged. | [7](#7-fare--payment) |
 | A-15 | Payment is cash only. | [7](#7-fare--payment) |
+| A-18 | The system suggests a route from the car's zone and the waiting demand; the driver chooses. | [4.6](#46-route-suggestion) |
+| A-19 | No seat hold: a fitting request takes its seat at once (auto-join); the driver does not confirm each join. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
 | A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |
