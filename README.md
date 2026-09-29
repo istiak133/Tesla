@@ -36,11 +36,17 @@ explain afterwards exactly what happened.
 - Passenger cancellation before the trip starts; an empty pool closes itself; full status history per ride
 - Trip lifecycle driven by the driver: arrive → start (final fares locked, 20% pool discount if 2+ passengers) → complete, or cancel before the start (passengers go back to waiting)
 - Invalid transitions rejected with 409; every change recorded in the ride history
-- Web screens *(coming)*
+- Web app for passengers and drivers: live status (polling every 3 s), loading / error / empty states, demo-account buttons on the login page
 
 ## Screenshots
 
-*(coming)*
+| Login with demo accounts | Rafiq auto-joined Nusrat's pool |
+|---|---|
+| ![Login](docs/screenshots/login.png) | ![Passenger matched](docs/screenshots/passenger-matched.png) |
+
+| Jashim's trip: 2 of 3 seats | Nusrat's fare locked at ৳60 after the start |
+|---|---|
+| ![Driver pool](docs/screenshots/driver-pool.png) | ![Fare locked](docs/screenshots/passenger-fare-locked.png) |
 
 ## Architecture
 
@@ -82,6 +88,10 @@ in [`decisions.md`](decisions.md). A summary is added here with the features *(c
 │   │   └── health/       GET /health (controller → service → repository)
 │   └── test/             end-to-end tests
 ├── web/                  Next.js web app (proxies /api/* to the API)
+│   └── src/
+│       ├── app/          pages: /login, /signup, /ride (passenger), /driver
+│       ├── components/   ui.tsx (shared pieces), ride/, driver/
+│       └── lib/          api client, session, types, formatting
 ├── docs/                 architecture, ERD, state machines, diagrams
 ├── .github/workflows/    CI
 ├── docker-compose.yml
