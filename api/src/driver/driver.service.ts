@@ -4,7 +4,13 @@ import {
   toStops,
 } from '../geography/geography.repository.js';
 import { RideStatus, Vehicle } from '../generated/prisma/client.js';
-import { joinProblem, routeProblem, tripStops } from '../pooling/route-plan.js';
+import {
+  approachKm,
+  newTripStart,
+  orderWaitingList,
+  stopOf,
+} from '../pooling/matching.js';
+import { joinProblem, tripStops } from '../pooling/route-plan.js';
 import {
   rankRoutes,
   suggestedRoute,
@@ -27,6 +33,8 @@ export type WaitingRequestView = {
   distanceKm: number;
   estimatedFarePaisa: number;
   requestedAt: Date;
+  // How far this driver's car drives along its route to reach the pickup (null: not reachable).
+  pickupKmAhead: number | null;
   // Whether the driver can accept it right now, and why not.
   canAccept: boolean;
   reason: string | null;
@@ -61,7 +69,8 @@ export class DriverService {
   async chooseRoute(driverId: string, routeId: string): Promise<void> {
     const vehicle = await this.getVehicle(driverId);
     const routes = await this.geographyRepository.listRoutes();
-    if (!routes.some((route) => route.id === routeId)) {
+    const route = routes.find((r) => r.id === routeId);
+    if (route === undefined) {
       throw new RideError('NOT_FOUND', 'Route not found');
     }
 
@@ -73,6 +82,19 @@ export class DriverService {
         throw new RideError(
           'HAS_ACTIVE_POOL',
           'Finish your current trip before changing route',
+        );
+      }
+      // A car drives the route from where it is, so the route must pass the car (D-014).
+      const locked = await tx.vehicle.findUniqueOrThrow({
+        where: { id: vehicle.id },
+      });
+      if (
+        locked.currentZoneId !== null &&
+        stopOf(toStops(route), locked.currentZoneId) === null
+      ) {
+        throw new RideError(
+          'NOT_COMPATIBLE',
+          'This route does not pass where your car is: set your location first',
         );
       }
       await tx.vehicle.update({
@@ -180,7 +202,11 @@ export class DriverService {
     const route = routes.find((r) => r.id === vehicle.routeId);
     const stops = route ? toStops(route) : [];
 
-    return waiting.map((ride) => {
+    // Where the car is on its route: the trip's current stop, or the car's zone between trips.
+    const carStop =
+      pool !== null ? pool.currentStop : stopOf(stops, vehicle.currentZoneId);
+
+    const listed = waiting.map((ride) => {
       // This check is only advice for the screen. The real check runs under the lock on accept.
       let reason: string | null = null;
 
@@ -192,9 +218,18 @@ export class DriverService {
         reason = 'Needs more seats than your vehicle has';
       } else if (pool !== null) {
         reason = joinProblem(pool, stops, ride)?.message ?? null;
-      } else if (routeProblem(stops, ride) !== null) {
-        reason = `${routeProblem(stops, ride)} (your route: ${route.name})`;
+      } else {
+        const start = newTripStart(stops, vehicle.currentZoneId, ride);
+        if ('problem' in start) {
+          reason = start.problem;
+        }
       }
+
+      const positions = route ? tripStops(stops, ride) : null;
+      const pickupKmAhead =
+        positions !== null && carStop !== null
+          ? approachKm(stops, carStop, positions.pickupStop)
+          : null;
 
       return {
         id: ride.id,
@@ -205,15 +240,19 @@ export class DriverService {
         distanceKm: ride.distanceKm,
         estimatedFarePaisa: ride.estimatedFarePaisa,
         requestedAt: ride.createdAt,
+        pickupKmAhead,
         canAccept: reason === null,
         reason,
       };
     });
+    // Takeable and near first, with aged requests lifted to the top (D-014).
+    return orderWaitingList(listed, new Date());
   }
 
   /**
    * Accepts a waiting request: starts a trip on the vehicle's route if there is none
-   * (the car heads to this passenger's stop), otherwise adds it to the current trip (R1–R4).
+   * (at the car's own stop; the pickup must be there or ahead), otherwise adds it to the
+   * current trip (R1–R4).
    */
   async acceptRequest(driverId: string, rideId: string) {
     const vehicle = await this.getVehicle(driverId);
@@ -245,22 +284,22 @@ export class DriverService {
         where: { vehicleId: vehicle.id, status: { in: ACTIVE_POOL_STATUSES } },
       });
       if (pool === null) {
-        // First passenger: a new trip on this route, heading to their stop.
+        // First passenger: a new trip on this route that starts where the car is, so the
+        // car drives stop by stop to the pickup (and can take others on the way).
         // Because the vehicle row is locked, two accepts can never create two trips.
         const stops = await this.ridesRepository.findRouteStops(
           tx,
           lockedVehicle.routeId,
         );
-        const problem = routeProblem(stops, ride);
-        if (problem !== null) {
-          throw new RideError('NOT_COMPATIBLE', problem);
+        const start = newTripStart(stops, lockedVehicle.currentZoneId, ride);
+        if ('problem' in start) {
+          throw new RideError('NOT_COMPATIBLE', start.problem);
         }
-        const positions = tripStops(stops, ride)!;
         pool = await tx.pool.create({
           data: {
             vehicleId: vehicle.id,
             routeId: lockedVehicle.routeId,
-            currentStop: positions.pickupStop,
+            currentStop: start.startStop,
             seatCapacity: lockedVehicle.seatCapacity,
           },
         });
