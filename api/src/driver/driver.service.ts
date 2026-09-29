@@ -5,6 +5,11 @@ import {
 } from '../geography/geography.repository.js';
 import { RideStatus, Vehicle } from '../generated/prisma/client.js';
 import { joinProblem, tripStops } from '../pooling/route-plan.js';
+import {
+  rankRoutes,
+  suggestedRoute,
+  type RankedRoute,
+} from '../pooling/route-suggestion.js';
 import { PoolingService } from '../rides/pooling.service.js';
 import { RideError } from '../rides/ride.errors.js';
 import { firstName } from '../rides/ride.views.js';
@@ -75,6 +80,64 @@ export class DriverService {
         data: { routeId },
       });
     });
+  }
+
+  /**
+   * Where the car is, told by the driver before the first trip. During a trip the
+   * location follows the stops (TripService.arrive), so it cannot be set by hand then.
+   */
+  async setLocation(driverId: string, zoneId: string): Promise<void> {
+    const vehicle = await this.getVehicle(driverId);
+    if (!(await this.geographyRepository.zoneExists(zoneId))) {
+      throw new RideError('INVALID_ZONE', 'Unknown zone');
+    }
+
+    await this.ridesRepository.withVehicleLock(vehicle.id, async (tx) => {
+      const activePool = await tx.pool.findFirst({
+        where: { vehicleId: vehicle.id, status: { in: ACTIVE_POOL_STATUSES } },
+      });
+      if (activePool !== null) {
+        throw new RideError(
+          'HAS_ACTIVE_POOL',
+          'During a trip your location follows the stops',
+        );
+      }
+      await tx.vehicle.update({
+        where: { id: vehicle.id },
+        data: { currentZoneId: zoneId },
+      });
+    });
+  }
+
+  /**
+   * Every route ranked for this driver, best first, with the suggested one.
+   * Only advice: the driver still chooses (chooseRoute).
+   */
+  async suggestRoutes(driverId: string): Promise<{
+    currentZone: { id: string; name: string } | null;
+    suggestedRouteId: string | null;
+    routes: RankedRoute[];
+  }> {
+    const vehicle = await this.ridesRepository.findVehicleByDriver(driverId);
+    if (vehicle === null) {
+      throw new RideError('NO_VEHICLE', 'This driver account has no vehicle');
+    }
+    const routes = await this.geographyRepository.listRoutes();
+    const waiting = await this.ridesRepository.listWaitingRequests();
+
+    const ranked = rankRoutes(
+      routes.map((route) => ({ ...route, stops: toStops(route) })),
+      vehicle.currentZoneId,
+      waiting,
+    );
+    return {
+      currentZone:
+        vehicle.currentZone === null
+          ? null
+          : { id: vehicle.currentZone.id, name: vehicle.currentZone.name },
+      suggestedRouteId: suggestedRoute(ranked)?.routeId ?? null,
+      routes: ranked,
+    };
   }
 
   async setOnline(driverId: string, online: boolean): Promise<Vehicle> {
@@ -267,6 +330,10 @@ export class DriverService {
           vehicle.route === null
             ? null
             : { id: vehicle.route.id, name: vehicle.route.name },
+        currentZone:
+          vehicle.currentZone === null
+            ? null
+            : { id: vehicle.currentZone.id, name: vehicle.currentZone.name },
       },
       pool:
         pool === null

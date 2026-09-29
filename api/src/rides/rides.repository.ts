@@ -68,7 +68,7 @@ export class RidesRepository {
   async findVehicleByDriver(driverId: string) {
     return this.prisma.vehicle.findUnique({
       where: { driverId },
-      include: { route: true },
+      include: { route: true, currentZone: true },
     });
   }
 

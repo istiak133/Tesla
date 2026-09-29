@@ -87,6 +87,7 @@ export type DriverState = {
     seatCapacity: number;
     isOnline: boolean;
     route: { id: string; name: string } | null;
+    currentZone: { id: string; name: string } | null;
   };
   pool: {
     id: string;
@@ -114,5 +115,16 @@ export type PastTrip = {
     dropoff: string;
     seats: number;
     finalFarePaisa: number | null;
+  }[];
+};
+
+export type RouteSuggestions = {
+  currentZone: { id: string; name: string } | null;
+  suggestedRouteId: string | null;
+  routes: {
+    routeId: string;
+    name: string;
+    passesYou: boolean;
+    waitingAhead: number;
   }[];
 };

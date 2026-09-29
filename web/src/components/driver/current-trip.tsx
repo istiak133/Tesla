@@ -50,7 +50,9 @@ export function CurrentTrip({ state }: { state: DriverState }) {
           hint={
             state.vehicle.isOnline
               ? "Accept a waiting request on your route to start a trip."
-              : "Choose a route and go online to see requests."
+              : state.vehicle.route
+                ? "Go online to see and accept requests."
+                : "Choose a route and go online to see requests."
           }
         />
       </Card>

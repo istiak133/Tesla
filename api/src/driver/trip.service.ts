@@ -40,6 +40,11 @@ export class TripService {
         where: { id: pool.id },
         data: { status: RideStatus.DRIVER_ARRIVED },
       });
+      // The car is here now: this is also where route suggestions start from.
+      await tx.vehicle.update({
+        where: { id: pool.vehicleId },
+        data: { currentZoneId: stops[pool.currentStop].zoneId },
+      });
 
       // Everyone waiting at this stop now sees the car is here.
       const waitingHere = await tx.poolMember.findMany({

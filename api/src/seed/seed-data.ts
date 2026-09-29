@@ -85,6 +85,10 @@ export async function seedCast(prisma: PrismaClient): Promise<void> {
   const route = await prisma.route.findUniqueOrThrow({
     where: { code: JASHIM_ROUTE_CODE },
   });
+  // The story starts at 8:41 AM on Banani Road 11.
+  const banani = await prisma.zone.findUniqueOrThrow({
+    where: { code: 'BAN' },
+  });
   await prisma.vehicle.upsert({
     where: { driverId: jashim.id },
     update: { name: 'Bullet', seatCapacity: 3 },
@@ -93,11 +97,16 @@ export async function seedCast(prisma: PrismaClient): Promise<void> {
       name: 'Bullet',
       seatCapacity: 3,
       routeId: route.id,
+      currentZoneId: banani.id,
     },
   });
-  // An older database may have Bullet without a route; never overwrite one Jashim chose.
+  // An older database may have Bullet without a route or location; never overwrite his own.
   await prisma.vehicle.updateMany({
     where: { driverId: jashim.id, routeId: null },
     data: { routeId: route.id },
+  });
+  await prisma.vehicle.updateMany({
+    where: { driverId: jashim.id, currentZoneId: null },
+    data: { currentZoneId: banani.id },
   });
 }

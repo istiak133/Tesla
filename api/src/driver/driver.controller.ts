@@ -15,6 +15,7 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard.js';
 import { Role } from '../generated/prisma/client.js';
 import { ChooseRouteDto } from './dto/choose-route.dto.js';
+import { SetLocationDto } from './dto/set-location.dto.js';
 import { DriverService } from './driver.service.js';
 import { TripService } from './trip.service.js';
 
@@ -38,6 +39,23 @@ export class DriverController {
   @Get('trips')
   pastTrips(@CurrentUser() user: PublicUser) {
     return this.driverService.listPastTrips(user.id);
+  }
+
+  // GET /driver/routes → every route ranked from where I am, with the suggested one
+  @Get('routes')
+  routeSuggestions(@CurrentUser() user: PublicUser) {
+    return this.driverService.suggestRoutes(user.id);
+  }
+
+  // POST /driver/location → where my car is (only between trips; stops update it after that)
+  @Post('location')
+  @HttpCode(200)
+  async setLocation(
+    @CurrentUser() user: PublicUser,
+    @Body() body: SetLocationDto,
+  ) {
+    await this.driverService.setLocation(user.id, body.zoneId);
+    return this.driverService.getCurrentPool(user.id);
   }
 
   // POST /driver/route → the route I drive (only between trips)

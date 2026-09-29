@@ -121,8 +121,8 @@ describe('Ride requests and pooling (e2e)', () => {
       .post(`/driver/requests/${nusratRide.body.id}/accept`)
       .expect(200);
 
-    // Eight riders ask for that last seat at the same moment.
-    const emails = await createPassengers(app, 8);
+    // Twenty riders ask for that last seat at the same moment.
+    const emails = await createPassengers(app, 20);
     const agents = await Promise.all(
       emails.map((email) => loginAs(app, email)),
     );
@@ -137,7 +137,7 @@ describe('Ride requests and pooling (e2e)', () => {
     const matched = responses.filter((r) => r.body.status === 'MATCHED');
     const waiting = responses.filter((r) => r.body.status === 'REQUESTED');
     expect(matched).toHaveLength(1); // exactly one winner
-    expect(waiting).toHaveLength(7); // nobody dropped: the rest keep waiting
+    expect(waiting).toHaveLength(19); // nobody dropped: the rest keep waiting
 
     const pool = await prisma.pool.findFirstOrThrow();
     expect(pool.seatsTaken).toBe(3);

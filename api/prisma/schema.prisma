@@ -61,6 +61,7 @@ model Zone {
   distancesFrom ZoneDistance[] @relation("DistanceFrom")
   distancesTo   ZoneDistance[] @relation("DistanceTo")
   routeStops    RouteStop[]
+  vehiclesHere  Vehicle[]
   ridePickups   RideRequest[]  @relation("RidePickup")
   rideDropoffs  RideRequest[]  @relation("RideDropoff")
 
@@ -121,17 +122,19 @@ enum RideStatus {
 
 // A driver's vehicle. The row is also the lock for every seat change (RidesRepository.withVehicleLock).
 model Vehicle {
-  id           String   @id @default(uuid()) @db.Uuid
-  driverId     String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
-  name         String
-  seatCapacity Int      @map("seat_capacity")
-  isOnline     Boolean  @default(false) @map("is_online")
-  routeId      String?  @map("route_id") @db.Uuid // the route the driver drives now; null until chosen
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id            String   @id @default(uuid()) @db.Uuid
+  driverId      String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
+  name          String
+  seatCapacity  Int      @map("seat_capacity")
+  isOnline      Boolean  @default(false) @map("is_online")
+  routeId       String?  @map("route_id") @db.Uuid // the route the driver drives now; null until chosen
+  currentZoneId String?  @map("current_zone_id") @db.Uuid // where the vehicle is; updated at every stop
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  driver User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  route  Route? @relation(fields: [routeId], references: [id])
-  pools  Pool[]
+  driver      User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  route       Route? @relation(fields: [routeId], references: [id])
+  currentZone Zone?  @relation(fields: [currentZoneId], references: [id])
+  pools       Pool[]
 
   @@map("vehicles")
 }
