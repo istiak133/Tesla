@@ -120,11 +120,14 @@ describe('A full trip, end to end (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: UTT, seats: 1 });
     expect(karimRide.body.status).toBe('REQUESTED');
-    const list = await jashim.get('/driver/requests');
-    expect(list.body[0]).toMatchObject({
-      passengerName: 'Karim',
-      canAccept: false,
-      reason: 'Not on this route in this direction',
+    // Not for this car: it is not in Jashim's list, and accepting it anyway is refused (D-020).
+    expect((await jashim.get('/driver/requests')).body).toEqual([]);
+    const wrongWay = await jashim.post(
+      `/driver/requests/${karimRide.body.id}/accept`,
+    );
+    expect(wrongWay.body).toMatchObject({
+      code: 'NOT_COMPATIBLE',
+      message: 'Not on this route in this direction',
     });
 
     // Privacy: nobody reads another passenger's ride.
@@ -163,10 +166,8 @@ describe('A full trip, end to end (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 });
     expect(karimSecond.body.status).toBe('REQUESTED');
-    expect((await jashim.get('/driver/requests')).body[0]).toMatchObject({
-      canAccept: false,
-      reason: '1 seat(s) short',
-    });
+    // Bullet is full, so it is not in Jashim's list until a seat frees (D-020).
+    expect((await jashim.get('/driver/requests')).body).toEqual([]);
 
     // Mid-trip the driver cannot walk away or change route.
     expect((await jashim.post('/driver/offline')).status).toBe(409);
