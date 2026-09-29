@@ -50,12 +50,12 @@ explain afterwards exactly what happened.
 
 ## Architecture
 
-- System overview (one page): [`docs/system-overview.pdf`](docs/system-overview.pdf)
+![Final architecture](docs/final_architecture_design.png)
+
+- Final architecture: [`docs/final_architecture_design.pdf`](docs/final_architecture_design.pdf)
+- Layered architecture with the numbered happy path: [`docs/architecture-diagram.pdf`](docs/architecture-diagram.pdf)
+- System overview (request path, ERD, lifecycles): [`docs/system-overview.pdf`](docs/system-overview.pdf)
 - One ride end to end: [`docs/ride-flow.pdf`](docs/ride-flow.pdf)
-- Architecture and consistency model: [`docs/architecture.md`](docs/architecture.md)
-- Database design (ERD, constraints, indexes): [`docs/erd.md`](docs/erd.md)
-- State machines: [`docs/state-machine.md`](docs/state-machine.md)
-- Every design decision with its reasoning: [`decisions.md`](decisions.md)
 
 ```
 Browser → Next.js (web, /api proxy) → NestJS (API) → PostgreSQL
@@ -92,7 +92,7 @@ in [`decisions.md`](decisions.md). A summary is added here with the features *(c
 │       ├── app/          pages: /login, /signup, /ride (passenger), /driver
 │       ├── components/   ui.tsx (shared pieces), ride/, driver/
 │       └── lib/          api client, session, types, formatting
-├── docs/                 architecture, ERD, state machines, diagrams
+├── docs/                 diagrams, assumptions, screenshots
 ├── .github/workflows/    CI
 ├── docker-compose.yml
 └── decisions.md

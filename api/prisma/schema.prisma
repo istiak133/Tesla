@@ -1,7 +1,7 @@
 // Database schema for Dhaka Tesla Pool.
 // Tables are added together with the feature that needs them.
 // CHECK constraints and partial unique indexes cannot be written here;
-// they live in migration SQL and are documented in docs/erd.md.
+// they live in migration SQL and are shown in docs/system-overview.pdf.
 
 generator client {
   provider            = "prisma-client"
