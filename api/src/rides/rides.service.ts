@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { soloFarePaisa } from '../fares/fare.js';
-import { GeographyRepository } from '../geography/geography.repository.js';
+import {
+  GeographyRepository,
+  toStops,
+} from '../geography/geography.repository.js';
 import { Prisma, RideStatus } from '../generated/prisma/client.js';
+import { tripStops } from '../pooling/route-plan.js';
 import { PoolingService } from './pooling.service.js';
 import { RideError } from './ride.errors.js';
 import { RideView, toRideView } from './ride.views.js';
@@ -36,6 +40,19 @@ export class RidesService {
       throw new RideError('INVALID_ZONE', 'Unknown zone');
     }
 
+    // Tesla Pool only drives its fixed routes (docs/assumptions.md §3.3).
+    const routes = await this.geographyRepository.listRoutes();
+    const served = routes.some(
+      (route) =>
+        tripStops(toStops(route), { pickupZoneId, dropoffZoneId }) !== null,
+    );
+    if (!served) {
+      throw new RideError(
+        'NO_ROUTE',
+        'No Tesla route goes from this pickup to this destination yet',
+      );
+    }
+
     const distance = await this.poolingService.distance();
     const distanceKm = distance(pickupZoneId, dropoffZoneId);
 
@@ -64,7 +81,7 @@ export class RidesService {
       throw error;
     }
 
-    // Join an open pool straight away if one fits; otherwise wait for a driver.
+    // Join a Tesla that will pass the pickup, if one fits; otherwise wait for a driver.
     await this.poolingService.tryAutoJoin(ride);
     return this.getRide(passengerId, ride.id);
   }
@@ -102,7 +119,7 @@ export class RidesService {
     }));
   }
 
-  /** Passenger cancel: allowed until the trip starts (docs/assumptions.md §6.1). */
+  /** Passenger cancel: allowed until the passenger is picked up (docs/assumptions.md §6.1). */
   async cancelRide(passengerId: string, rideId: string): Promise<RideView> {
     const ride = await this.ridesRepository.findRide(rideId);
     if (ride === null) {
@@ -144,7 +161,7 @@ export class RidesService {
         if (!cancellable.includes(current.status)) {
           throw new RideError(
             'INVALID_TRANSITION',
-            'A ride cannot be cancelled once the trip has started',
+            'A ride cannot be cancelled after pickup',
           );
         }
         await this.poolingService.leaveUnderLock(

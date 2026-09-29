@@ -8,8 +8,8 @@ export function taka(paisa: number): string {
 export const STATUS_LABEL: Record<RideStatus, string> = {
   REQUESTED: "Waiting for a driver",
   MATCHED: "Matched",
-  DRIVER_ARRIVED: "Driver arrived",
-  STARTED: "In progress",
+  DRIVER_ARRIVED: "Car at the stop",
+  STARTED: "On board",
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
 };

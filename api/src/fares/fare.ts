@@ -1,7 +1,7 @@
 // Fare rules from docs/assumptions.md §7. All money is in integer paisa (1 taka = 100 paisa).
 //
 //   subtotal      = (baseFare + distanceKm × perKmRate) × seats
-//   poolDiscount  = 20% of subtotal, only if the pool has 2+ passengers when the trip starts
+//   poolDiscount  = 20% of subtotal, only if another passenger shared at least one hop
 //   passengerFare = subtotal − poolDiscount
 
 export const BASE_FARE_PAISA = 3000; // ৳30
@@ -15,16 +15,17 @@ export function soloFarePaisa(distanceKm: number, seats: number): number {
 }
 
 /**
- * The final fare, locked when the trip starts.
- * The discount counts passengers, not seats: one passenger booking two seats alone gets none.
+ * The final fare, locked when the passenger is dropped off.
+ * `shared` = another passenger rode with them on at least one hop (see pooling/route-plan.ts).
+ * One passenger booking two seats alone is not sharing, so gets no discount.
  */
 export function finalFarePaisa(
   distanceKm: number,
   seats: number,
-  passengersInPool: number,
+  shared: boolean,
 ): number {
   const subtotal = soloFarePaisa(distanceKm, seats);
-  if (passengersInPool < 2) {
+  if (!shared) {
     return subtotal;
   }
   // Integer maths only. Every subtotal is a multiple of 500 paisa,

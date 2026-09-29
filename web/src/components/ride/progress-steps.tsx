@@ -3,9 +3,9 @@ import type { RideStatus } from "@/lib/types";
 const STEPS: { status: RideStatus; label: string }[] = [
   { status: "REQUESTED", label: "Requested" },
   { status: "MATCHED", label: "Matched" },
-  { status: "DRIVER_ARRIVED", label: "Driver arrived" },
-  { status: "STARTED", label: "On the way" },
-  { status: "COMPLETED", label: "Completed" },
+  { status: "DRIVER_ARRIVED", label: "Car at your stop" },
+  { status: "STARTED", label: "On board" },
+  { status: "COMPLETED", label: "Dropped off" },
 ];
 
 /** A simple horizontal progress line for the ride lifecycle. */

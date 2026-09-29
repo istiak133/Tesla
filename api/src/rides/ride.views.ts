@@ -16,6 +16,15 @@ export type RideView = {
   finalFarePaisa: number | null;
   createdAt: Date;
   driver: { name: string; vehicleName: string } | null;
+  // The Tesla's route and where the car is, once the ride has a seat.
+  route: {
+    name: string;
+    stops: string[]; // zone names in driving order
+    pickupStop: number;
+    dropoffStop: number;
+    carStop: number; // the stop the car is at or heading to
+    carAtStop: boolean; // true while the car is standing at carStop
+  } | null;
   // Co-riders' first names only, never their fares (docs/assumptions.md §8).
   coRiders: string[];
   history: { status: RideStatus; reason: string; at: Date }[];
@@ -26,9 +35,12 @@ type RideDetails = NonNullable<
 >;
 
 export function toRideView(ride: RideDetails): RideView {
+  // The latest seat: still held, or finished by being dropped off.
   const membership = ride.memberships[0];
-  const pool =
-    membership && membership.leftAt === null ? membership.pool : null;
+  const hasSeat =
+    membership !== undefined &&
+    (membership.leftAt === null || ride.status === RideStatus.COMPLETED);
+  const pool = hasSeat ? membership.pool : null;
 
   return {
     id: ride.id,
@@ -44,11 +56,25 @@ export function toRideView(ride: RideDetails): RideView {
       pool === null
         ? null
         : { name: pool.vehicle.driver.name, vehicleName: pool.vehicle.name },
+    route:
+      pool === null
+        ? null
+        : {
+            name: pool.route.name,
+            stops: pool.route.stops.map((stop) => stop.zone.name),
+            pickupStop: membership.pickupStop,
+            dropoffStop: membership.dropoffStop,
+            carStop: pool.currentStop,
+            carAtStop: pool.status === RideStatus.DRIVER_ARRIVED,
+          },
     coRiders:
       pool === null
         ? []
         : pool.members
-            .filter((member) => member.rideRequestId !== ride.id)
+            .filter(
+              (member) =>
+                member.leftAt === null && member.rideRequestId !== ride.id,
+            )
             .map((member) => firstName(member.rideRequest.passenger.name)),
     history: ride.events.map((event) => ({
       status: event.toStatus,

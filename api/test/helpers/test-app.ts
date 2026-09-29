@@ -3,7 +3,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../../src/app.module.js';
 import { configureApp } from '../../src/app.setup.js';
 import { PrismaService } from '../../src/database/prisma.service.js';
-import { seedZones } from '../../src/seed/seed-data.js';
+import { seedGeography } from '../../src/seed/seed-data.js';
 
 /** Starts the whole API the same way main.ts does, against the real test database. */
 export async function createTestApp(): Promise<NestExpressApplication> {
@@ -19,7 +19,7 @@ export async function createTestApp(): Promise<NestExpressApplication> {
 
 /**
  * Deletes all rows so every test starts from a known state,
- * then puts back the zones and distances that every ride needs.
+ * then puts back the zones, distances and routes that every ride needs.
  */
 export async function resetDatabase(app: NestExpressApplication) {
   const prisma = app.get(PrismaService);
@@ -36,9 +36,9 @@ export async function resetDatabase(app: NestExpressApplication) {
   }
 
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "ride_events", "pool_members", "pools", "ride_requests", "vehicles", "sessions", "users", "zone_distances", "zones" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "ride_events", "pool_members", "pools", "ride_requests", "vehicles", "sessions", "users", "route_stops", "routes", "zone_distances", "zones" RESTART IDENTITY CASCADE',
   );
-  await seedZones(prisma);
+  await seedGeography(prisma);
 }
 
 // ---------- helpers for ride tests ----------

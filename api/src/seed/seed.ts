@@ -1,11 +1,11 @@
-// Demo data: the 14 Dhaka zones with their distances, and the PRD's story cast.
+// Demo data: the 14 Dhaka zones, their distances and the Tesla routes, and the PRD's story cast.
 // Safe to run many times (everything is upserted).
 //
 // Run:  npm run build && npm run db:seed
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client.js';
-import { seedCast, seedZones } from './seed-data.js';
+import { seedCast, seedGeography } from './seed-data.js';
 
 async function main() {
   const databaseUrl = process.env['DATABASE_URL'];
@@ -17,8 +17,8 @@ async function main() {
   });
 
   try {
-    await seedZones(prisma);
-    console.log('seeded zones and distances');
+    await seedGeography(prisma);
+    console.log('seeded zones, distances and routes');
     await seedCast(prisma);
     console.log('seeded the story cast');
   } finally {

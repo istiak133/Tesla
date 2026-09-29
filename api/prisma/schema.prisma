@@ -60,7 +60,8 @@ model Zone {
 
   distancesFrom ZoneDistance[] @relation("DistanceFrom")
   distancesTo   ZoneDistance[] @relation("DistanceTo")
-  pickupPools   Pool[]
+  routeStops    RouteStop[]
+  vehiclesHere  Vehicle[]
   ridePickups   RideRequest[]  @relation("RidePickup")
   rideDropoffs  RideRequest[]  @relation("RideDropoff")
 
@@ -81,6 +82,33 @@ model ZoneDistance {
   @@map("zone_distances")
 }
 
+// A fixed Tesla route, one direction only (see docs/assumptions.md §3.3).
+model Route {
+  id   String @id @default(uuid()) @db.Uuid
+  code String @unique // e.g. "UTT-BSH"
+  name String @unique // e.g. "Uttara → Bashundhara"
+
+  stops    RouteStop[]
+  vehicles Vehicle[]
+  pools    Pool[]
+
+  @@map("routes")
+}
+
+// The zones of a route in driving order. position 0 is the first stop.
+model RouteStop {
+  routeId  String @map("route_id") @db.Uuid
+  position Int
+  zoneId   String @map("zone_id") @db.Uuid
+
+  route Route @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  zone  Zone  @relation(fields: [zoneId], references: [id])
+
+  @@id([routeId, position])
+  @@unique([routeId, zoneId])
+  @@map("route_stops")
+}
+
 // One status set for both ride requests and pools (docs/assumptions.md §5).
 // A pool is never REQUESTED; a request is REQUESTED until it gets a seat.
 enum RideStatus {
@@ -92,26 +120,33 @@ enum RideStatus {
   CANCELLED
 }
 
-// A driver's vehicle. The row is also the lock for every seat change (see PoolingRepository).
+// A driver's vehicle. The row is also the lock for every seat change (RidesRepository.withVehicleLock).
 model Vehicle {
-  id           String   @id @default(uuid()) @db.Uuid
-  driverId     String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
-  name         String
-  seatCapacity Int      @map("seat_capacity")
-  isOnline     Boolean  @default(false) @map("is_online")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id            String   @id @default(uuid()) @db.Uuid
+  driverId      String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
+  name          String
+  seatCapacity  Int      @map("seat_capacity")
+  isOnline      Boolean  @default(false) @map("is_online")
+  routeId       String?  @map("route_id") @db.Uuid // the route the driver drives now; null until chosen
+  currentZoneId String?  @map("current_zone_id") @db.Uuid // where the vehicle is; updated at every stop
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  driver User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  pools  Pool[]
+  driver      User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  route       Route? @relation(fields: [routeId], references: [id])
+  currentZone Zone?  @relation(fields: [currentZoneId], references: [id])
+  pools       Pool[]
 
   @@map("vehicles")
 }
 
-// One trip of one vehicle, carrying one or more ride requests.
+// One trip of a vehicle along its route. status says where the vehicle is:
+// MATCHED = heading to the first pickup, DRIVER_ARRIVED = at current_stop,
+// STARTED = driving to current_stop, then COMPLETED or CANCELLED.
 model Pool {
   id           String     @id @default(uuid()) @db.Uuid
   vehicleId    String     @map("vehicle_id") @db.Uuid
-  pickupZoneId String     @map("pickup_zone_id") @db.Uuid
+  routeId      String     @map("route_id") @db.Uuid
+  currentStop  Int        @map("current_stop") // position the vehicle is at or heading to
   status       RideStatus @default(MATCHED)
   // Copied from the vehicle when the pool is created, so the CHECK can compare two columns.
   seatCapacity Int        @map("seat_capacity")
@@ -120,12 +155,12 @@ model Pool {
   startedAt    DateTime?  @map("started_at") @db.Timestamptz(6)
   endedAt      DateTime?  @map("ended_at") @db.Timestamptz(6)
 
-  vehicle    Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  pickupZone Zone         @relation(fields: [pickupZoneId], references: [id])
-  members    PoolMember[]
-  events     RideEvent[]
+  vehicle Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  route   Route        @relation(fields: [routeId], references: [id])
+  members PoolMember[]
+  events  RideEvent[]
 
-  @@index([status, pickupZoneId])
+  @@index([status, routeId])
   @@map("pools")
 }
 
@@ -161,8 +196,10 @@ model PoolMember {
   poolId        String    @map("pool_id") @db.Uuid
   rideRequestId String    @map("ride_request_id") @db.Uuid
   seats         Int
+  pickupStop    Int       @map("pickup_stop") // route positions of this passenger's pickup
+  dropoffStop   Int       @map("dropoff_stop") // and drop-off
   joinedAt      DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
-  leftAt        DateTime? @map("left_at") @db.Timestamptz(6)
+  leftAt        DateTime? @map("left_at") @db.Timestamptz(6) // set when dropped off or cancelled
 
   pool        Pool        @relation(fields: [poolId], references: [id], onDelete: Cascade)
   rideRequest RideRequest @relation(fields: [rideRequestId], references: [id], onDelete: Cascade)

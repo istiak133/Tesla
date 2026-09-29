@@ -51,7 +51,7 @@ export function Button({
     <button
       {...rest}
       disabled={disabled || loading}
-      className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}
     >
       {loading && <Spinner small />}
       {children}
@@ -87,13 +87,7 @@ export function ErrorNote({ message }: { message: string }) {
   );
 }
 
-export function EmptyState({
-  title,
-  hint,
-}: {
-  title: string;
-  hint?: string;
-}) {
+export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="rounded-xl border border-dashed border-zinc-300 px-4 py-8 text-center">
       <p className="text-sm font-medium text-zinc-700">{title}</p>

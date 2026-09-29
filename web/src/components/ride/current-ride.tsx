@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { dhakaTime, taka } from "@/lib/format";
 import type { Ride } from "@/lib/types";
+import { RouteLine } from "../route-line";
 import { Button, Card, ErrorNote, StatusBadge } from "../ui";
 import { ProgressSteps } from "./progress-steps";
 
@@ -41,12 +42,28 @@ export function CurrentRide({ ride }: { ride: Ride }) {
             <p className="text-xs text-zinc-500">
               {fareIsFinal
                 ? "Final fare · pay in cash"
-                : "Estimate · the most you will pay"}
+                : "Estimate · 20% off if you share any hop"}
             </p>
           </div>
         </div>
 
         <ProgressSteps status={ride.status} />
+
+        {ride.route && ride.status !== "COMPLETED" && (
+          <div className="space-y-3 rounded-xl border border-zinc-200 p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <p className="text-sm font-medium">{carText(ride)}</p>
+              <p className="text-xs text-zinc-500">{ride.route.name}</p>
+            </div>
+            <RouteLine
+              stops={ride.route.stops}
+              carStop={ride.route.carStop}
+              carAtStop={ride.route.carAtStop}
+              from={ride.route.pickupStop}
+              to={ride.route.dropoffStop}
+            />
+          </div>
+        )}
 
         <dl className="grid gap-4 border-t border-zinc-100 pt-5 text-sm sm:grid-cols-2">
           <div>
@@ -98,4 +115,25 @@ export function CurrentRide({ ride }: { ride: Ride }) {
       </div>
     </Card>
   );
+}
+
+/** Where the car is, from this passenger's point of view. */
+function carText(ride: Ride): string {
+  const route = ride.route!;
+  const car = ride.driver?.vehicleName ?? "The car";
+  const carAt = route.stops[route.carStop];
+  if (ride.status === "STARTED") {
+    const left = route.dropoffStop - route.carStop;
+    return route.carAtStop && left === 0
+      ? `You have arrived at ${route.stops[route.dropoffStop]}`
+      : `On board · ${left} ${left === 1 ? "stop" : "stops"} to ${route.stops[route.dropoffStop]}`;
+  }
+  const away = route.pickupStop - route.carStop;
+  if (away === 0 && route.carAtStop) {
+    return `${car} is at ${carAt}: get in`;
+  }
+  if (away === 0) {
+    return `${car} is on the way to you`;
+  }
+  return `${car} is ${route.carAtStop ? "at" : "heading to"} ${carAt} · ${away} ${away === 1 ? "stop" : "stops"} away`;
 }

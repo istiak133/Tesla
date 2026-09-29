@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma, RideStatus } from '../generated/prisma/client.js';
+import type { Stop } from '../pooling/route-plan.js';
 import { RideError } from './ride.errors.js';
 
 // The client passed into a transaction callback.
@@ -18,6 +19,11 @@ export const ACTIVE_POOL_STATUSES: RideStatus[] = [
   RideStatus.DRIVER_ARRIVED,
   RideStatus.STARTED,
 ];
+
+// A route with its stops in driving order, for includes.
+const ROUTE_STOPS = {
+  stops: { orderBy: { position: 'asc' }, include: { zone: true } },
+} satisfies Prisma.RouteInclude;
 
 /**
  * The only place that talks to the database for rides, pools and vehicles.
@@ -60,7 +66,10 @@ export class RidesRepository {
   // ---------- reads (no lock needed) ----------
 
   async findVehicleByDriver(driverId: string) {
-    return this.prisma.vehicle.findUnique({ where: { driverId } });
+    return this.prisma.vehicle.findUnique({
+      where: { driverId },
+      include: { route: true, currentZone: true },
+    });
   }
 
   async findRide(rideId: string) {
@@ -96,9 +105,9 @@ export class RidesRepository {
           include: {
             pool: {
               include: {
+                route: { include: ROUTE_STOPS },
                 vehicle: { include: { driver: true } },
                 members: {
-                  where: { leftAt: null },
                   include: { rideRequest: { include: { passenger: true } } },
                 },
               },
@@ -118,29 +127,33 @@ export class RidesRepository {
     });
   }
 
-  /** Open pools a new request might join: MATCHED, same pickup, driver online. Oldest first. */
-  async listOpenPoolsAt(pickupZoneId: string) {
+  /**
+   * Pools a new request might join: active, driver online, and the route stops at the
+   * pickup zone. Oldest first. The full rules (R1–R4) are checked again under the lock.
+   */
+  async listJoinablePools(pickupZoneId: string) {
     return this.prisma.pool.findMany({
       where: {
-        status: RideStatus.MATCHED,
-        pickupZoneId,
+        status: { in: ACTIVE_POOL_STATUSES },
         vehicle: { isOnline: true },
+        route: { stops: { some: { zoneId: pickupZoneId } } },
       },
       orderBy: { createdAt: 'asc' },
     });
   }
 
-  /** The vehicle's current pool with its active members (for the driver screen). */
+  /** The vehicle's current pool with its route and every member (for the driver screen). */
   async findActivePoolDetails(vehicleId: string) {
     return this.prisma.pool.findFirst({
       where: { vehicleId, status: { in: ACTIVE_POOL_STATUSES } },
       include: {
-        pickupZone: true,
+        route: { include: ROUTE_STOPS },
         members: {
-          where: { leftAt: null },
           orderBy: { joinedAt: 'asc' },
           include: {
-            rideRequest: { include: { passenger: true, dropoffZone: true } },
+            rideRequest: {
+              include: { passenger: true, pickupZone: true, dropoffZone: true },
+            },
           },
         },
       },
@@ -157,15 +170,31 @@ export class RidesRepository {
       orderBy: { createdAt: 'desc' },
       take: 20,
       include: {
-        pickupZone: true,
+        route: true,
         members: {
           orderBy: { joinedAt: 'asc' },
           include: {
-            rideRequest: { include: { passenger: true, dropoffZone: true } },
+            rideRequest: {
+              include: { passenger: true, pickupZone: true, dropoffZone: true },
+            },
           },
         },
       },
     });
+  }
+
+  /** A route's stops, read with the transaction's own connection (safe inside the lock). */
+  async findRouteStops(tx: Tx, routeId: string): Promise<Stop[]> {
+    const stops = await tx.routeStop.findMany({
+      where: { routeId },
+      orderBy: { position: 'asc' },
+      include: { zone: true },
+    });
+    return stops.map((stop) => ({
+      position: stop.position,
+      zoneId: stop.zoneId,
+      name: stop.zone.name,
+    }));
   }
 
   async findActiveMembership(rideRequestId: string) {

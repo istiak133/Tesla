@@ -22,29 +22,31 @@ explain afterwards exactly what happened.
 ## Features implemented
 
 - Passenger sign-up, login and logout with server-side sessions in an httpOnly cookie
-- Role-based access (passenger / driver) and rate-limited login
-- 14 Dhaka zones with a whole-kilometre distance table, and the fare and detour rules (unit-tested with the PRD examples)
+- Role-based access (passenger / driver) and rate-limited sign-up and login
+- **En-route pooling on fixed routes:** 14 Dhaka zones on six routes (three lines, both directions). A Tesla already on its way picks up anyone waiting at a stop ahead until its seats are full
+- Fare and route rules as pure, unit-tested functions with the PRD examples
 - Seed data with the story cast (Jashim the driver, Nusrat, Rafiq, Shirin)
 - Health endpoint with a real database check (`GET /health`)
 - Structured JSON logging with a request id per request
 - Environment validation at startup (the app refuses to start with bad config)
 - Same-origin `/api` proxy from the web app to the API
 - One-command local run with Docker Compose, plus CI on every pull request
-- Ride requests with a solo fare estimate; automatic join into the oldest compatible open pool
-- Drivers go online, see waiting requests (with the reason if they cannot take one) and accept them
-- Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with eight riders racing for the last seat
-- Passenger cancellation before the trip starts; an empty pool closes itself; full status history per ride
-- Trip lifecycle driven by the driver: arrive → start (final fares locked, 20% pool discount if 2+ passengers) → complete, or cancel before the start (passengers go back to waiting)
-- Invalid transitions rejected with 409; every change recorded in the ride history
-- Web app for passengers and drivers: live status (polling every 3 s), loading / error / empty states, demo-account buttons on the login page
+- Ride requests with a solo fare estimate, only for trips a route serves; automatic join into the oldest Tesla that has not passed the pickup
+- Drivers get a **suggested route** from where the car is and where riders are waiting (one tap to take it, or pick another), go online, see waiting requests (with the reason if they cannot take one, e.g. "The car has already passed Banani") and accept them
+- Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with twenty riders racing for the last seat, and "the car leaves a stop" vs "a passenger joins at that stop" tested as a race
+- Trip driven stop by stop: arrive → picked up / drop off / no-show → leave for the next stop. Each passenger gets on and off at their own stop; seats are freed at drop-off
+- Fares locked at drop-off: 20% off if another passenger shared at least one hop
+- Passenger cancellation until pickup; the driver can cancel before the first pickup (passengers go back to waiting); an empty trip closes itself
+- Invalid transitions rejected with 409; every passenger status change recorded in the ride history
+- Web app for passengers and drivers: the route drawn with the car on it, live status (polling every 3 s), loading / error / empty states, demo-account buttons on the login page
 
 ## Screenshots
 
-| Login with demo accounts | Rafiq auto-joined Nusrat's pool |
+| Login with demo accounts | Shirin joins Bullet on the way, at Mohakhali |
 |---|---|
 | ![Login](docs/screenshots/login.png) | ![Passenger matched](docs/screenshots/passenger-matched.png) |
 
-| Jashim's trip: 2 of 3 seats | Nusrat's fare locked at ৳60 after the start |
+| Jashim at Mohakhali: Nusrat gets off, Shirin gets on | Nusrat paid ৳60 for sharing a hop |
 |---|---|
 | ![Driver pool](docs/screenshots/driver-pool.png) | ![Fare locked](docs/screenshots/passenger-fare-locked.png) |
 
@@ -186,22 +188,27 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 |---|---|---|
 | GET | `/health` | `200 {"status":"ok","database":"up"}` or `503` when the database is unreachable |
 | POST | `/auth/signup` | Create a passenger account and log in (sets the session cookie) |
-| POST | `/auth/login` | Log in with email and password (sets the session cookie); 5 attempts per minute |
+| POST | `/auth/login` | Log in with email and password (sets the session cookie); 5 attempts per minute (sign-up too) |
 | POST | `/auth/logout` | End the session and clear the cookie |
 | GET | `/auth/me` | The logged-in user |
 | GET | `/zones` | The 14 zones for pickup and destination |
-| POST | `/rides` | Passenger: request a ride `{pickupZoneId, dropoffZoneId, seats}`; joins an open pool at once if one fits |
-| GET | `/rides/current` | Passenger: the active ride (driver, co-riders' first names, fare, history) |
+| GET | `/routes` | The six routes with their stops in driving order |
+| POST | `/rides` | Passenger: request a ride `{pickupZoneId, dropoffZoneId, seats}`; `400 NO_ROUTE` if no route serves it; joins a Tesla on the way at once if one fits |
+| GET | `/rides/current` | Passenger: the active ride (driver, route with the car's position, co-riders' first names, fare, history) |
 | GET | `/rides` | Passenger: ride history |
 | GET | `/rides/:id` | Passenger: one of my rides (403 for someone else's) |
-| POST | `/rides/:id/cancel` | Passenger: cancel before the trip starts |
-| POST | `/driver/online`, `/driver/offline` | Driver: availability (offline refused during a trip) |
+| POST | `/rides/:id/cancel` | Passenger: cancel until picked up |
+| GET | `/driver/routes` | Driver: every route ranked from the car's zone, with riders waiting ahead and the suggested one |
+| POST | `/driver/location` | Driver: where the car is `{zoneId}` (before a trip; stops update it after that) |
+| POST | `/driver/route` | Driver: choose the route `{routeId}` (only between trips) |
+| POST | `/driver/online`, `/driver/offline` | Driver: availability (a route is required; offline refused during a trip) |
 | GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |
-| POST | `/driver/requests/:id/accept` | Driver: accept (creates the pool or adds to the open one) |
-| GET | `/driver/pool` | Driver: vehicle and current trip with its passengers |
+| POST | `/driver/requests/:id/accept` | Driver: accept (starts a trip on the route, or adds to the current one) |
+| GET | `/driver/pool` | Driver: vehicle, route and current trip with its stops and passengers |
 | GET | `/driver/trips` | Driver: past trips with passengers and fares |
-| POST | `/driver/pool/arrive`, `/start`, `/complete` | Driver: move the trip forward (409 out of order); start locks the fares |
-| POST | `/driver/pool/cancel` | Driver: cancel before the start; passengers return to waiting |
+| POST | `/driver/pool/arrive`, `/driver/pool/depart` | Driver: arrive at the current stop; leave for the next one (409 while someone still waits here) |
+| POST | `/driver/pool/passengers/:rideId/pickup`, `/dropoff`, `/no-show` | Driver: one passenger at this stop; drop-off locks their fare |
+| POST | `/driver/pool/cancel` | Driver: cancel before the first pickup; passengers return to waiting |
 
 Business errors return `{ statusCode, code, message }`, e.g. `409 SEATS_UNAVAILABLE`, `403 NOT_YOUR_RIDE`.
 
@@ -211,14 +218,17 @@ More endpoints are added with each feature *(coming)*.
 
 ## Fare model
 
-`(৳30 + km × ৳15) × seats`, minus **20%** if the pool has two or more passengers when the trip starts. The estimate shown at request time is the solo fare, so nobody pays more than they saw. Money is stored in integer paisa.
+`(৳30 + direct km × ৳15) × seats`, minus **20%** if another passenger rode with you on at least one hop. The fare is locked when you are dropped off. The estimate shown at request time is the solo fare, so nobody pays more than they saw, and nobody pays for the route's detour. Money is stored in integer paisa.
 
-| Passenger | Trip | km | Estimate (solo) | Pooled with the other |
+| Passenger | Trip | km | Estimate (solo) | Final (shared a hop) |
 |---|---|---:|---:|---:|
 | Nusrat | Banani → Mohakhali | 3 | ৳75 | ৳60 |
 | Rafiq | Banani → Gulshan 1 | 4 | ৳90 | ৳72 |
+| Shirin | Mohakhali → Bashundhara (joins on the way) | 7 | ৳135 | ৳108 |
 
-Matching rules, detours and every other assumption: [`docs/assumptions.md`](docs/assumptions.md).
+Taking over a seat at the stop where someone else got off is not sharing: both pay their solo fare.
+
+Routes, matching rules (R1–R4) and every other assumption: [`docs/assumptions.md`](docs/assumptions.md).
 
 ## Key decisions and trade-offs
 

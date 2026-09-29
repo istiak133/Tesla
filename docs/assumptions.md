@@ -4,7 +4,7 @@
 |---|---|
 | **Document** | Assumptions & Business Rules |
 | **Project** | Dhaka Tesla Pool — MVP |
-| **Related** | [Architecture](architecture.md) · [ERD](erd.md) · [State machines](state-machine.md) · [Decisions](../decisions.md) |
+| **Related** | [System overview](system-overview.pdf) · [Ride flow](ride-flow.pdf) · [Decisions](../decisions.md) |
 
 ---
 
@@ -12,7 +12,7 @@
 
 1. [Purpose & Scope](#1-purpose--scope)
 2. [Glossary](#2-glossary)
-3. [Geography](#3-geography)
+3. [Geography and Routes](#3-geography)
 4. [Matching Rules](#4-matching-rules)
 5. [Ride Lifecycle](#5-ride-lifecycle)
 6. [Cancellation Rules](#6-cancellation-rules)
@@ -40,12 +40,13 @@ Every rule here is implemented in the backend, covered by tests where it carries
 |---|---|
 | **Zone** | A predefined area of Dhaka. Every trip starts and ends in a zone. |
 | **Ride request** | One passenger's request for a trip: pickup zone, destination zone, seat count. |
-| **Pool** | A single trip by one driver's vehicle, carrying one or more ride requests. |
-| **Pool member** | A ride request that has been assigned a seat in a pool. |
-| **Direct distance** | The distance from pickup to a passenger's own destination, from the distance table. |
-| **In-car distance** | The distance a passenger actually travels, given the pool's drop-off order. |
-| **Detour** | In-car distance − direct distance. |
-| **Open pool** | A pool in `MATCHED` status that can still accept members. |
+| **Route** | A fixed line of zones a Tesla drives in one direction, e.g. Uttara → Banani → Mohakhali → Gulshan 1 → Gulshan 2 → Bashundhara. |
+| **Stop** | One zone on a route. Its **position** (0, 1, 2 …) is its place in driving order. |
+| **Hop** | The stretch between two neighbouring stops. |
+| **Pool** | One trip of one driver's vehicle along its route, carrying one or more ride requests. |
+| **Current stop** | The stop the vehicle is standing at, or driving to. |
+| **Pool member** | A ride request that holds seats in a pool, from its pickup stop to its drop-off stop. |
+| **Direct distance** | The distance from pickup to a passenger's own destination, from the distance table. It sets the fare. |
 | **Paisa** | 1/100 of a Bangladeshi taka (৳). All money is stored in paisa. |
 
 ---
@@ -97,7 +98,22 @@ Approximate road distances, rounded to whole kilometres and stored in the seed d
 |---|---|
 | **Whole kilometres** | Every fare works out to whole taka and can be checked by hand. |
 | **Symmetric** (A → B = B → A) | Direction never changes the price. |
-| **Triangle inequality** (A → C ≤ A → B + B → C) | A detour can never be negative. Verified for all 2,184 zone triples. |
+| **Triangle inequality** (A → C ≤ A → B + B → C) | Going through a stop is never shorter than going direct. Verified for all 2,184 zone triples. |
+
+### 3.3 Routes
+
+Tesla Pool drives **three fixed lines**, each in both directions, so there are **six routes**. A driver picks one route before going online and keeps it for the whole trip. Seeded in `api/src/geography/dhaka-routes.ts`.
+
+| Line | Stops in driving order (and back) |
+|---|---|
+| Airport Road | Uttara → Banani → Mohakhali → Gulshan 1 → Gulshan 2 → Bashundhara |
+| Mirpur | Uttara → Mirpur 12 → Mirpur 11 → Mirpur 10 → Mirpur 2 → Mirpur 1 → Farmgate → Dhanmondi |
+| Tejgaon | Banani → Mohakhali → Tejgaon → Farmgate → Dhanmondi |
+
+**Rules**
+- Every zone is on at least one route.
+- A ride can be requested only if some route passes the pickup **and then** the destination. Anything else is refused with `400 NO_ROUTE`, and the web app only offers reachable destinations.
+- Routes decide **who can share a car**. They do not change the price: each passenger pays for their own direct distance (§7).
 
 ---
 
@@ -105,106 +121,126 @@ Approximate road distances, rounded to whole kilometres and stored in the seed d
 
 ### 4.1 Eligibility
 
-A ride request may join an existing pool only when **all four** conditions hold:
+A ride request may join a pool only when **all four** conditions hold. They are pure functions in `api/src/pooling/route-plan.ts` and are checked again under the vehicle lock.
 
 | # | Condition | Check |
 |---|---|---|
-| M1 | **Same pickup zone** | `request.pickupZone = pool.pickupZone` |
-| M2 | **Pool is open** | `pool.status = MATCHED` |
-| M3 | **Seats available** | `pool.occupiedSeats + request.seats ≤ vehicle.capacity` |
-| M4 | **Detour limit** | Every member's detour, including the new one, is **≤ 2 km** |
+| R1 | **On the route, in its direction** | the route has the pickup and the drop-off, and `pickupStop < dropoffStop` |
+| R2 | **The car has not passed the pickup** | `pickupStop ≥ pool.currentStop` |
+| R3 | **Seats available** | `pool.seatsTaken + request.seats ≤ pool.seatCapacity` |
+| R4 | **Pool is active** | `pool.status ∈ {MATCHED, DRIVER_ARRIVED, STARTED}` and the driver is online |
 
-### 4.2 Detour Calculation
+This is **en-route pooling**: a Tesla that is already on its way keeps picking people up at the stops ahead until its seats are full. Seats are freed when a passenger is dropped off, so a car that is full at Banani can take someone new at Mohakhali after a passenger gets off there.
 
-1. Order drop-offs **nearest-first** by each member's direct distance from the pickup zone. Ties go to the earlier request.
-2. A member's **in-car distance** is the sum of route legs from pickup to their drop-off.
-3. **Detour = in-car distance − direct distance.**
+### 4.2 Worked Examples (route Uttara → Bashundhara)
 
-### 4.3 Worked Examples
+| Case | Trip | Result |
+|---|---|---|
+| Nusrat, first | Banani → Mohakhali | Jashim accepts; the trip starts on his route, heading to Banani |
+| Rafiq | Banani → Gulshan 1 | Same route ahead → joins at once |
+| Shirin, while Bullet drives Banani → Mohakhali | Mohakhali → Bashundhara | Mohakhali is ahead → joins on the way |
+| Anyone, after Bullet left Banani | Banani → Gulshan 1 | R2 fails: "The car has already passed Banani" |
+| Anyone | Banani → Uttara | R1 fails: the opposite direction |
 
-**Nusrat + Rafiq — match**
-
-| Passenger | Trip | Direct | Route | In-car | Detour |
-|---|---|---:|---|---:|---:|
-| Nusrat | Banani → Mohakhali | 3 km | BAN → MOH | 3 km | 0 km |
-| Rafiq | Banani → Gulshan 1 | 4 km | BAN → MOH → GL1 (3 + 3) | 6 km | 2 km |
-
-All conditions hold, so they share Bullet.
-
-**Banani → Uttara joining Nusrat — no match**
-
-Route BAN → MOH → UTT = 3 + 13 = 16 km against a direct 12 km: detour 4 km > 2 km. The request stays `REQUESTED` and waits for its own driver.
-
-### 4.4 Matching Flow
+### 4.3 Matching Flow
 
 ```mermaid
 flowchart TD
-    A[Passenger submits request] --> B[Status: REQUESTED]
-    B --> C{Open pool that passes<br/>M1 – M4?}
-    C -- Yes --> D[Reserve seats in a transaction]
-    D --> E[Status: MATCHED]
-    C -- No --> F[Visible to online drivers]
-    F --> G{Driver accepts.<br/>Driver has an open pool?}
-    G -- No --> H[New pool created]
-    G -- Yes, passes M1 – M4 --> D
-    H --> E
+    A[Passenger submits request] --> B{Some route serves<br/>pickup → destination?}
+    B -- No --> X[400 NO_ROUTE]
+    B -- Yes --> C[Status: REQUESTED]
+    C --> D{Active pool that passes<br/>R1 – R4?}
+    D -- Yes --> E[Take seats under the vehicle lock]
+    E --> F[Status: MATCHED]
+    D -- No --> G[Visible to online drivers]
+    G --> H{Driver accepts.<br/>Driver has an active pool?}
+    H -- No --> I[New pool on the driver's route,<br/>heading to this pickup]
+    H -- Yes, passes R1 – R4 --> E
+    I --> E
 ```
 
-- **Automatic join:** when several pools qualify, the request joins the one **created earliest**, so older pools fill first.
-- **Driver accept:** a driver with no active pool creates a new one. A driver whose pool is still open can accept only requests that pass M1 – M4, and the request is added to that pool. This covers requests made *before* the pool existed, which the automatic join would never see.
+### 4.4 Automatic Join and Driver Accept
+
+- **Automatic join:** a new request joins the **oldest** active pool that passes R1 – R4, so older trips fill first. If the vehicle is busy (lock wait over 3 s), the request just keeps waiting.
+- **Driver accept:** a driver with no active pool starts a new one on their route; the car heads to this passenger's stop. A driver with an active pool can accept only requests that pass R1 – R4. The waiting list shows the reason for every request that does not fit.
 
 ### 4.5 Constraints
 
 | Rule | Reason |
 |---|---|
-| A driver has at most **one active pool**. | One vehicle can only be in one place. |
+| A driver has at most **one active pool**, and changes route only between trips. | One vehicle can only be in one place. |
 | A passenger has at most **one active request**. | Prevents double-booking the same person. |
-| A driver cannot go offline with an active pool. | Passengers must not be abandoned mid-assignment. |
+| A driver must pick a route before going online, and cannot go offline with an active pool. | Passengers must not be abandoned mid-trip. |
+
+### 4.6 Route Suggestion
+
+The system suggests a route and the driver decides (`api/src/pooling/route-suggestion.ts`).
+
+| Step | Rule |
+|---|---|
+| Where the car is | `vehicles.current_zone`: set by the driver before the first trip, then updated automatically at every **Arrive**. It cannot be set by hand during a trip. |
+| Demand per route | Waiting requests the route could still serve from the car's zone: the route passes their pickup, then their destination, and the pickup is at or after the car. |
+| Ranking | Routes through the car's zone first, then most riders waiting, then route code. |
+| Suggestion | The best route through the car's zone, shown as **Suggested** with one tap to take it. No suggestion while the location is unknown. |
+
+Example: Jashim at Banani; Nusrat Banani → Dhanmondi and Rafiq Mohakhali → Farmgate wait on Banani → Dhanmondi, Shirin Banani → Gulshan 1 on Uttara → Bashundhara, so Banani → Dhanmondi is suggested (2 waiting). At scale this becomes automatic dispatch from GPS and demand; it is kept as advice here because there is no live location and the driver must agree to a route.
 
 ---
 
 ## 5. Ride Lifecycle
 
-### 5.1 States
+### 5.1 Passenger States
 
-Both ride requests and pools carry a status. Driver actions change the pool's status, which is applied to every active member in the same transaction.
+Each passenger moves on their own: people get on and off at different stops.
 
 ```mermaid
 stateDiagram-v2
     [*] --> REQUESTED
-    REQUESTED --> MATCHED: joins pool / driver accepts
-    MATCHED --> DRIVER_ARRIVED: driver arrives
-    DRIVER_ARRIVED --> STARTED: driver starts (fares locked)
-    STARTED --> COMPLETED: driver completes
+    REQUESTED --> MATCHED: joins a pool / driver accepts
+    MATCHED --> DRIVER_ARRIVED: car arrives at their stop
+    DRIVER_ARRIVED --> STARTED: driver marks picked up
+    STARTED --> COMPLETED: dropped off (fare locked)
     REQUESTED --> CANCELLED: passenger cancels
     MATCHED --> CANCELLED: passenger cancels
-    DRIVER_ARRIVED --> CANCELLED: passenger cancels
-    MATCHED --> REQUESTED: driver cancels pool
-    DRIVER_ARRIVED --> REQUESTED: driver cancels pool
+    DRIVER_ARRIVED --> CANCELLED: passenger cancels / no-show
+    MATCHED --> REQUESTED: driver cancels the trip
+    DRIVER_ARRIVED --> REQUESTED: driver cancels the trip
     COMPLETED --> [*]
     CANCELLED --> [*]
 ```
 
-### 5.2 Allowed Transitions
+### 5.2 Pool States: Where the Car Is
 
-| From | To | Actor | Precondition |
-|---|---|---|---|
-| `REQUESTED` | `MATCHED` | System / Driver | Joins an open pool, or a driver accepts it |
-| `MATCHED` | `DRIVER_ARRIVED` | Driver | Pool belongs to this driver |
-| `DRIVER_ARRIVED` | `STARTED` | Driver | Pool has ≥ 1 active member; **fares are locked** |
-| `STARTED` | `COMPLETED` | Driver | — |
-| `REQUESTED`, `MATCHED`, `DRIVER_ARRIVED` | `CANCELLED` | Passenger | Ride belongs to this passenger |
-| `MATCHED`, `DRIVER_ARRIVED` | `REQUESTED` | Driver | Driver cancels the pool before start |
+The pool's status and `current_stop` together say where the vehicle is.
 
-Any other transition is rejected with **`409 Conflict`**. `COMPLETED` and `CANCELLED` are terminal.
+| Status | Meaning |
+|---|---|
+| `MATCHED` | Heading to the first pickup |
+| `DRIVER_ARRIVED` | Standing at the current stop |
+| `STARTED` | Driving to the current stop |
+| `COMPLETED` | Everyone was dropped off |
+| `CANCELLED` | Ended before anyone was picked up |
 
-### 5.3 Deviation from the Brief
+### 5.3 Driver Actions
 
-The brief suggests `MATCHED/ACCEPTED` as a single step. This design keeps one state, `MATCHED`, because "a driver accepted the request" and "the request joined an existing pool" have the same outcome: the passenger holds a seat in a specific vehicle.
+| Action | From → to | Precondition |
+|---|---|---|
+| **Arrive** | pool `MATCHED`/`STARTED` → `DRIVER_ARRIVED`; passengers waiting at this stop → `DRIVER_ARRIVED` | Not already at a stop |
+| **Picked up** | passenger `DRIVER_ARRIVED` → `STARTED` | The car is at their stop |
+| **No-show** | passenger `DRIVER_ARRIVED` → `CANCELLED`, seats freed | The car is at their stop |
+| **Drop off** | passenger `STARTED` → `COMPLETED`, **fare locked**, seats freed | The car is at their drop-off stop |
+| **Leave for next stop** | pool `DRIVER_ARRIVED` → `STARTED`, `current_stop + 1` | Nobody left to pick up or drop off here |
+| **Cancel trip** | members → `REQUESTED`, pool → `CANCELLED` | Nobody has been picked up yet |
 
-### 5.4 Audit Trail
+When the last passenger leaves the pool, it closes by itself: `COMPLETED` if anyone was carried, otherwise `CANCELLED`. Any other order is rejected with **`409 INVALID_TRANSITION`**.
 
-Every transition is recorded in a status history table with the ride, previous status, new status, actor, reason and timestamp. Any past ride can be reconstructed from it.
+### 5.4 Deviation from the Brief
+
+The brief suggests `MATCHED/ACCEPTED` as a single step. This design keeps one state, `MATCHED`, because "a driver accepted the request" and "the request joined a pool" have the same outcome: the passenger holds a seat in a specific vehicle. `STARTED` means "in the car" for a passenger and "driving between stops" for the pool.
+
+### 5.5 Audit Trail
+
+Every passenger status change is recorded in `ride_events` with the ride, the pool, previous status, new status, actor, reason (e.g. "Picked up at Banani") and timestamp. Any past ride can be reconstructed from it.
 
 ---
 
@@ -214,33 +250,33 @@ Every transition is recorded in a status history table with the ride, previous s
 
 | Rule | Detail |
 |---|---|
-| **When** | `REQUESTED`, `MATCHED` or `DRIVER_ARRIVED`. Not allowed once `STARTED`. |
+| **When** | `REQUESTED`, `MATCHED` or `DRIVER_ARRIVED`, i.e. until picked up. Not allowed once in the car. |
 | **Who** | Only the passenger who owns the ride. Anyone else receives `403 Forbidden`. |
 | **Seats** | Released immediately, in the same transaction. |
-| **Empty pool** | If no active members remain, the pool is cancelled and the driver becomes free. |
+| **Empty pool** | If nobody is left, the pool closes and the driver becomes free. |
 | **Fee** | None in the MVP. |
 
 ### 6.2 Effect on Other Passengers' Fares
 
-Fares are locked only when the trip starts. If Rafiq cancels before the start, Nusrat rides alone and pays the solo fare of **৳75** instead of ৳60. Her estimate already showed ৳75, so a passenger **never pays more than the estimate** they saw.
+Fares are locked at drop-off. If Rafiq cancels before being picked up, Nusrat rides alone and pays the solo fare of **৳75** instead of ৳60. Her estimate already showed ৳75, so a passenger **never pays more than the estimate** they saw.
 
-### 6.3 Driver Cancellation
+### 6.3 Driver Cancellation and No-shows
 
 | Rule | Detail |
 |---|---|
-| **When** | Before `STARTED` only (e.g. vehicle breakdown). |
-| **Effect** | All active members return to `REQUESTED`, not `CANCELLED`, so another driver can pick them up. |
-| **Audit** | The reason is recorded in the status history. |
+| **Cancel trip** | Before the first pickup only (e.g. a breakdown). All members return to `REQUESTED`, not `CANCELLED`, so another driver can take them. |
+| **No-show** | At the passenger's stop, the driver can mark them as not there: the ride is `CANCELLED` and the seat is freed. |
+| **Audit** | The reason is recorded in the history. |
 
 ---
 
 ## 7. Fare & Payment
 
-Implemented in `api/src/fares/fare.ts`; the hand-calculations below are unit tests in `api/src/fares/fare.spec.ts`.
+Implemented in `api/src/fares/fare.ts` and `api/src/pooling/route-plan.ts`; the hand-calculations below are unit tests.
 
 ```
 subtotal      = (baseFare + distanceKm × perKmRate) × seats
-poolDiscount  = subtotal × 20%        — only if the pool has 2+ passengers at STARTED
+poolDiscount  = subtotal × 20%   — only if another passenger rode with you on at least one hop
 passengerFare = subtotal − poolDiscount
 ```
 
@@ -248,16 +284,25 @@ passengerFare = subtotal − poolDiscount
 |---|---:|---:|
 | Base fare | ৳30 | 3000 |
 | Per-km rate | ৳15 | 1500 |
-| Pool discount | 20% | 2000 basis points |
+| Pool discount | 20% | — |
 
 | Rule | Detail |
 |---|---|
 | **Money storage** | Integer paisa. No floating-point arithmetic anywhere in the fare path. |
-| **Distance charged** | Each passenger pays for their own direct distance, never the detour. |
-| **Pool discount basis** | Counts passengers, not seats. One passenger booking two seats alone gets no discount. |
+| **Distance charged** | Each passenger pays for their own **direct** distance, never the route's detour. |
+| **Sharing rule** | Two passengers share if their stretches overlap on at least one hop: `a.pickup < b.dropoff` and `b.pickup < a.dropoff`. Getting on at the stop where someone else gets off is not sharing. Cancelled riders and no-shows never count. |
 | **Estimate** | Shown at request time using the solo fare, the maximum the passenger can pay. |
-| **Final fare** | Calculated and locked when the trip starts. |
-| **Payment** | Cash only: the passenger pays the final fare to the driver when the trip is `COMPLETED`. A simulated TeslaPay wallet is a future improvement. |
+| **Final fare** | Calculated and locked when the passenger is **dropped off**, when it is known who they rode with. |
+| **Payment** | Cash only: the passenger pays the final fare to the driver at drop-off. A simulated TeslaPay wallet is a future improvement. |
+
+**Worked examples**
+
+| Passenger | Trip | Solo | Shared a hop with | Final |
+|---|---|---:|---|---:|
+| Nusrat | Banani → Mohakhali, 3 km | ৳75 | Rafiq (Banani → Mohakhali) | **৳60** |
+| Rafiq | Banani → Gulshan 1, 4 km | ৳90 | Nusrat, Shirin | **৳72** |
+| Shirin | Mohakhali → Bashundhara, 7 km | ৳135 | Rafiq (Mohakhali → Gulshan 1) | **৳108** |
+| Nusrat alone | Banani → Mohakhali | ৳75 | nobody | **৳75** |
 
 ---
 
@@ -268,7 +313,7 @@ passengerFare = subtotal − poolDiscount
 | **Roles** | Each account has exactly one role: `PASSENGER` or `DRIVER`. |
 | **Vehicles** | A driver owns exactly one vehicle. Bullet's capacity is 3. |
 | **Seats per request** | 1 to 3, never more than the vehicle's capacity. |
-| **Visibility** | A passenger sees only their own rides and fares. A driver sees only the members of their own pools. |
+| **Visibility** | A passenger sees only their own rides and fares, plus where the car is on the route. A driver sees only the members of their own pools. |
 | **Pool members** | Passengers in the same pool see each other's first name only, never fares. |
 
 ---
@@ -278,7 +323,7 @@ passengerFare = subtotal − poolDiscount
 | Area | Assumption | Reason |
 |---|---|---|
 | **Live updates** | Screens poll every 3 s (histories every 10 s); actions update the screen immediately. | Simple and reliable on free hosting, and correctness never depends on it (every action is re-checked under the lock). At scale: adaptive polling, then WebSockets or SSE (see D-007). |
-| **Concurrency** | Seat reservation locks the vehicle row inside a transaction, backed by a database `CHECK` constraint. | Two passengers racing for the last seat must never both succeed. |
+| **Concurrency** | Every seat or stop change locks the vehicle row inside a transaction, backed by database `CHECK` constraints. | Two passengers racing for the last seat must never both succeed, and the car can never leave a stop while someone is joining there. |
 | **Time zone** | Timestamps are stored in UTC and shown in Asia/Dhaka (UTC+6). | Avoids ambiguity in history and tests. |
 | **Language** | The UI is in English. | Keeps the MVP scope small; Bangla is a future improvement. |
 
@@ -290,10 +335,10 @@ The seed data, tests and demo use the cast from the brief throughout.
 
 | Name | Role | Trip / Vehicle | Scenario |
 |---|---|---|---|
-| **Jashim** | Driver | Bullet, 3 seats | Accepts and runs the pool |
+| **Jashim** | Driver | Bullet, 3 seats, route Uttara → Bashundhara | Accepts and drives the trip stop by stop |
 | **Nusrat** | Passenger | Banani → Mohakhali | First request; pooled fare ৳60 |
-| **Rafiq** | Passenger | Banani → Gulshan 1 | Joins Nusrat's pool; pooled fare ৳72 |
-| **Shirin** | Passenger | Banani → Mohakhali | Races for the last seat |
+| **Rafiq** | Passenger | Banani → Gulshan 1 | Joins Nusrat's trip; pooled fare ৳72 |
+| **Shirin** | Passenger | Mohakhali → Bashundhara | Joins Bullet on the way; races for the last seat |
 
 ---
 
@@ -303,18 +348,20 @@ The seed data, tests and demo use the cast from the brief throughout.
 |---|---|---|
 | A-01 | Dhaka is modelled as 14 fixed zones; no map API or routing. | [3.1](#31-zones) |
 | A-02 | Distances are fixed, symmetric, whole kilometres. | [3.2](#32-distance-table-km) |
-| A-03 | Pool members share the same pickup zone. | [4.1](#41-eligibility) |
-| A-04 | Maximum detour per passenger is 2 km. | [4.1](#41-eligibility) |
-| A-05 | Drop-offs are ordered nearest-first. | [4.2](#42-detour-calculation) |
-| A-06 | A request auto-joins the oldest open compatible pool; a driver can also add compatible waiting requests to their open pool. | [4.4](#44-matching-flow) |
-| A-07 | One active pool per driver; one active request per passenger. | [4.5](#45-constraints) |
-| A-08 | `MATCHED` covers both "accepted" and "joined a pool". | [5.3](#53-deviation-from-the-brief) |
-| A-09 | Every status change is recorded in an audit table. | [5.4](#54-audit-trail) |
-| A-10 | Passengers can cancel only before `STARTED`, with no fee. | [6.1](#61-passenger-cancellation) |
-| A-11 | Driver cancellation returns passengers to `REQUESTED`. | [6.3](#63-driver-cancellation) |
-| A-12 | Fares are locked at `STARTED`; passengers never pay more than the estimate. | [7](#7-fare--payment) |
+| A-03 | Tesla Pool drives six fixed routes (three lines, both directions); a ride needs a route that passes the pickup, then the destination. | [3.3](#33-routes) |
+| A-04 | A passenger can join a Tesla already on its way if it has not passed their pickup (R1 – R4). | [4.1](#41-eligibility) |
+| A-05 | Seats are freed at drop-off; the seat count covers everyone not yet dropped off. | [4.1](#41-eligibility) |
+| A-06 | A request auto-joins the oldest compatible pool; a driver can also accept compatible waiting requests. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-07 | One active pool per driver; one active request per passenger; the route changes only between trips. | [4.5](#45-constraints) |
+| A-08 | `MATCHED` covers both "accepted" and "joined a pool". | [5.4](#54-deviation-from-the-brief) |
+| A-09 | Every passenger status change is recorded in an audit table. | [5.5](#55-audit-trail) |
+| A-10 | Passengers can cancel until picked up, with no fee; drivers can mark no-shows. | [6](#6-cancellation-rules) |
+| A-11 | Driver cancellation (before the first pickup) returns passengers to `REQUESTED`. | [6.3](#63-driver-cancellation-and-no-shows) |
+| A-12 | Fares are locked at drop-off; passengers never pay more than the estimate. | [7](#7-fare--payment) |
 | A-13 | Money is stored as integer paisa. | [7](#7-fare--payment) |
-| A-14 | Pool discount is 20% and counts passengers, not seats. | [7](#7-fare--payment) |
+| A-14 | The 20% discount applies when another passenger shared at least one hop; direct distance is charged. | [7](#7-fare--payment) |
 | A-15 | Payment is cash only. | [7](#7-fare--payment) |
+| A-18 | The system suggests a route from the car's zone and the waiting demand; the driver chooses. | [4.6](#46-route-suggestion) |
+| A-19 | No seat hold: a fitting request takes its seat at once (auto-join); the driver does not confirm each join. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
 | A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |
