@@ -48,13 +48,11 @@ describe('A full trip, end to end (e2e)', () => {
 
     // ---------- a new passenger signs up; roles are enforced ----------
     const karim = request.agent(app.getHttpServer());
-    const signup = await karim
-      .post('/auth/signup')
-      .send({
-        name: 'Karim Uddin',
-        email: 'Karim@Example.com',
-        password: 'karim-pass-1',
-      });
+    const signup = await karim.post('/auth/signup').send({
+      name: 'Karim Uddin',
+      email: 'Karim@Example.com',
+      password: 'karim-pass-1',
+    });
     expect(signup.status).toBe(201);
     expect(signup.body).toMatchObject({
       email: 'karim@example.com',
