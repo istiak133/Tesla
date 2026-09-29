@@ -36,7 +36,7 @@ export async function resetDatabase(app: NestExpressApplication) {
   }
 
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "ride_events", "pool_members", "pools", "ride_requests", "vehicles", "sessions", "users", "route_stops", "routes", "zone_distances", "zones" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "ride_events", "pool_members", "pools", "ride_requests", "vehicles", "driver_profiles", "sessions", "users", "route_stops", "routes", "zone_distances", "zones" RESTART IDENTITY CASCADE',
   );
   await seedGeography(prisma);
 }
@@ -72,9 +72,13 @@ export async function createPassengers(
 /** A supertest agent logged in as this user (keeps the session cookie). */
 export async function loginAs(app: NestExpressApplication, email: string) {
   const agent = request.agent(app.getHttpServer());
+  // The login page asks for the account type (D-015); the helper reads it from the user.
+  const { role } = await app
+    .get(PrismaService)
+    .user.findUniqueOrThrow({ where: { email } });
   const response = await agent
     .post('/auth/login')
-    .send({ email, password: DEMO_PASSWORD });
+    .send({ role, email, password: DEMO_PASSWORD });
   if (response.status !== 200) {
     throw new Error(`Login failed for ${email}: ${response.status}`);
   }
