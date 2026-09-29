@@ -1,13 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { GeographyRepository } from '../geography/geography.repository.js';
-import { Pool, RideRequest, RideStatus } from '../generated/prisma/client.js';
 import {
-  allDetoursWithinLimit,
+  GeographyRepository,
   type DistanceLookup,
-  type Rider,
-} from '../pooling/detour.js';
+} from '../geography/geography.repository.js';
+import { Pool, RideRequest, RideStatus } from '../generated/prisma/client.js';
+import { joinProblem, tripStops } from '../pooling/route-plan.js';
 import { RideError } from './ride.errors.js';
-import { RidesRepository, Tx } from './rides.repository.js';
+import {
+  ACTIVE_POOL_STATUSES,
+  RidesRepository,
+  Tx,
+} from './rides.repository.js';
 
 /**
  * The seat rules. Every method that changes seats must be called
@@ -34,13 +37,11 @@ export class PoolingService {
 
   /**
    * Automatic join (docs/assumptions.md §4.4): put a new request into the oldest
-   * open pool that passes M1–M4. Returns true if it joined one.
+   * active pool whose car has not passed the pickup yet. Returns true if it joined one.
    */
   async tryAutoJoin(ride: RideRequest): Promise<boolean> {
-    // Loaded before any lock (see the class comment).
-    const distance = await this.distance();
     // Found without a lock; every condition is checked again under the lock.
-    const candidates = await this.ridesRepository.listOpenPoolsAt(
+    const candidates = await this.ridesRepository.listJoinablePools(
       ride.pickupZoneId,
     );
 
@@ -59,9 +60,8 @@ export class PoolingService {
               tx,
               pool,
               current,
-              distance,
               null,
-              'Joined an open pool automatically',
+              'Joined a Tesla on the way automatically',
             );
           },
         );
@@ -73,7 +73,7 @@ export class PoolingService {
           return false;
         }
         if (error instanceof RideError) {
-          // This pool did not fit (full, detour too long, already started). Try the next.
+          // This pool did not fit (full, wrong direction, already passed). Try the next.
           continue;
         }
         throw error;
@@ -83,18 +83,22 @@ export class PoolingService {
   }
 
   /**
-   * Checks M1–M4 against the locked pool and, if they pass, gives the ride its seats.
+   * Checks R1–R4 against the locked pool and, if they pass, gives the ride its seats.
    * Throws a RideError (and the transaction rolls back) if anything does not fit.
    */
   async joinUnderLock(
     tx: Tx,
     pool: Pool,
     ride: RideRequest,
-    distance: DistanceLookup,
     actorUserId: string | null,
     reason: string,
   ): Promise<void> {
-    await this.assertCanJoin(tx, pool, ride, distance);
+    const stops = await this.ridesRepository.findRouteStops(tx, pool.routeId);
+    const problem = joinProblem(pool, stops, ride);
+    if (problem !== null) {
+      throw new RideError(problem.code, problem.message);
+    }
+    const { pickupStop, dropoffStop } = tripStops(stops, ride)!;
 
     // Compare-and-set: only a request that is still waiting can take a seat.
     const claimed = await tx.rideRequest.updateMany({
@@ -106,11 +110,13 @@ export class PoolingService {
     }
 
     // Seat update with its conditions in the SQL itself (second line of defence):
-    // the pool must still be open and have room. The CHECK constraint is the third.
+    // the pool must still be active, the car must not have passed the pickup, and
+    // there must be room. The CHECK constraint is the third.
     const seatsUpdated = await tx.pool.updateMany({
       where: {
         id: pool.id,
-        status: RideStatus.MATCHED,
+        status: { in: ACTIVE_POOL_STATUSES },
+        currentStop: { lte: pickupStop },
         seatsTaken: { lte: pool.seatCapacity - ride.seats },
       },
       data: { seatsTaken: { increment: ride.seats } },
@@ -120,7 +126,13 @@ export class PoolingService {
     }
 
     await tx.poolMember.create({
-      data: { poolId: pool.id, rideRequestId: ride.id, seats: ride.seats },
+      data: {
+        poolId: pool.id,
+        rideRequestId: ride.id,
+        seats: ride.seats,
+        pickupStop,
+        dropoffStop,
+      },
     });
     await tx.rideEvent.create({
       data: {
@@ -132,11 +144,32 @@ export class PoolingService {
         reason,
       },
     });
+
+    // The car is already standing at this passenger's stop: they can get in now.
+    if (
+      pool.status === RideStatus.DRIVER_ARRIVED &&
+      pool.currentStop === pickupStop
+    ) {
+      await tx.rideRequest.update({
+        where: { id: ride.id },
+        data: { status: RideStatus.DRIVER_ARRIVED },
+      });
+      await tx.rideEvent.create({
+        data: {
+          rideRequestId: ride.id,
+          poolId: pool.id,
+          fromStatus: RideStatus.MATCHED,
+          toStatus: RideStatus.DRIVER_ARRIVED,
+          actorUserId: null,
+          reason: `The car is already at ${stops[pickupStop].name}`,
+        },
+      });
+    }
   }
 
   /**
-   * Takes a ride out of its pool (passenger cancel) and frees its seats.
-   * If nobody is left and the trip has not started, the pool is cancelled too.
+   * Takes a ride that has not been picked up out of its pool and frees its seats:
+   * a passenger cancel, or the driver marking a no-show. Closes the pool if it is now empty.
    */
   async leaveUnderLock(
     tx: Tx,
@@ -175,57 +208,28 @@ export class PoolingService {
       },
     });
 
+    await this.closeIfEmpty(tx, poolId);
+  }
+
+  /**
+   * Ends a pool that has nobody left in it: COMPLETED if anyone was ever picked up,
+   * CANCELLED if the car never carried anyone.
+   */
+  async closeIfEmpty(tx: Tx, poolId: string): Promise<void> {
     const remaining = await tx.poolMember.count({
       where: { poolId, leftAt: null },
     });
-    if (remaining === 0) {
-      await tx.pool.update({
-        where: { id: poolId },
-        data: { status: RideStatus.CANCELLED, endedAt: new Date() },
-      });
+    if (remaining > 0) {
+      return;
     }
-  }
-
-  /** M1–M4 from docs/assumptions.md §4.1, checked on the locked pool row. */
-  private async assertCanJoin(
-    tx: Tx,
-    pool: Pool,
-    ride: RideRequest,
-    distance: DistanceLookup,
-  ) {
-    if (pool.status !== RideStatus.MATCHED) {
-      throw new RideError('POOL_NOT_OPEN', 'This trip is already under way');
-    }
-    if (pool.pickupZoneId !== ride.pickupZoneId) {
-      throw new RideError('NOT_COMPATIBLE', 'Different pickup zone');
-    }
-
-    const freeSeats = pool.seatCapacity - pool.seatsTaken;
-    if (ride.seats > freeSeats) {
-      const short = ride.seats - freeSeats;
-      throw new RideError('SEATS_UNAVAILABLE', `${short} seat(s) short`);
-    }
-
-    const members = await tx.poolMember.findMany({
-      where: { poolId: pool.id, leftAt: null },
-      include: { rideRequest: true },
+    const pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
+    await tx.pool.update({
+      where: { id: poolId },
+      data: {
+        status:
+          pool.startedAt === null ? RideStatus.CANCELLED : RideStatus.COMPLETED,
+        endedAt: new Date(),
+      },
     });
-    // Oldest request first, so ties in drop-off order go to the earlier request.
-    members.sort(
-      (a, b) =>
-        a.rideRequest.createdAt.getTime() - b.rideRequest.createdAt.getTime(),
-    );
-    const riders: Rider[] = members.map((member) => ({
-      id: member.rideRequestId,
-      dropoffZoneId: member.rideRequest.dropoffZoneId,
-    }));
-    riders.push({ id: ride.id, dropoffZoneId: ride.dropoffZoneId });
-
-    if (!allDetoursWithinLimit(pool.pickupZoneId, riders, distance)) {
-      throw new RideError(
-        'NOT_COMPATIBLE',
-        'The detour would be longer than 2 km for someone',
-      );
-    }
   }
 }

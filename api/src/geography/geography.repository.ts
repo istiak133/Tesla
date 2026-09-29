@@ -1,8 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service.js';
-import type { DistanceLookup } from '../pooling/detour.js';
+import type { Stop } from '../pooling/route-plan.js';
 
 export type ZoneSummary = { id: string; code: string; name: string };
+
+// Returns km between two zones (0 for the same zone).
+export type DistanceLookup = (fromZoneId: string, toZoneId: string) => number;
+
+export type RouteSummary = {
+  id: string;
+  code: string;
+  name: string;
+  stops: { position: number; zone: ZoneSummary }[];
+};
 
 @Injectable()
 export class GeographyRepository {
@@ -12,6 +22,25 @@ export class GeographyRepository {
     return this.prisma.zone.findMany({
       select: { id: true, code: true, name: true },
       orderBy: { name: 'asc' },
+    });
+  }
+
+  /** Every route with its stops in driving order. Six small routes, so no paging. */
+  async listRoutes(): Promise<RouteSummary[]> {
+    return this.prisma.route.findMany({
+      orderBy: { code: 'asc' },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        stops: {
+          orderBy: { position: 'asc' },
+          select: {
+            position: true,
+            zone: { select: { id: true, code: true, name: true } },
+          },
+        },
+      },
     });
   }
 
@@ -45,4 +74,13 @@ export class GeographyRepository {
       return km;
     };
   }
+}
+
+/** A route's stops in the shape the pooling rules use. */
+export function toStops(route: RouteSummary): Stop[] {
+  return route.stops.map((stop) => ({
+    position: stop.position,
+    zoneId: stop.zone.id,
+    name: stop.zone.name,
+  }));
 }

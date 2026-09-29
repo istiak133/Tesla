@@ -1,6 +1,7 @@
 // Seed steps shared by the seed script and the e2e tests.
 // Every step upserts by a natural key, so running it again changes nothing.
 import { hashPassword } from '../auth/password.js';
+import { routeDirections } from '../geography/dhaka-routes.js';
 import { DISTANCE_KM, ZONES } from '../geography/dhaka-zones.js';
 import { PrismaClient, Role } from '../generated/prisma/client.js';
 
@@ -14,7 +15,7 @@ export const CAST = [
   { name: 'Shirin', email: 'shirin@teslapool.test', role: Role.PASSENGER },
 ];
 
-export async function seedZones(prisma: PrismaClient): Promise<void> {
+export async function seedGeography(prisma: PrismaClient): Promise<void> {
   const zoneIdByCode = new Map<string, string>();
   for (const zone of ZONES) {
     const saved = await prisma.zone.upsert({
@@ -40,7 +41,32 @@ export async function seedZones(prisma: PrismaClient): Promise<void> {
       });
     }
   }
+
+  // Routes, each direction on its own, with stops in driving order.
+  const zoneNameByCode = new Map<string, string>(
+    ZONES.map((zone) => [zone.code, zone.name]),
+  );
+  for (const route of routeDirections()) {
+    const first = zoneNameByCode.get(route.stops[0])!;
+    const last = zoneNameByCode.get(route.stops[route.stops.length - 1])!;
+    const saved = await prisma.route.upsert({
+      where: { code: route.code },
+      update: { name: `${first} → ${last}` },
+      create: { code: route.code, name: `${first} → ${last}` },
+    });
+    for (let position = 0; position < route.stops.length; position++) {
+      const zoneId = zoneIdByCode.get(route.stops[position])!;
+      await prisma.routeStop.upsert({
+        where: { routeId_position: { routeId: saved.id, position } },
+        update: { zoneId },
+        create: { routeId: saved.id, position, zoneId },
+      });
+    }
+  }
 }
+
+// The route Jashim drives in the story: Uttara → Banani → Mohakhali → Gulshan 1 → …
+export const JASHIM_ROUTE_CODE = 'UTT-BSH';
 
 export async function seedCast(prisma: PrismaClient): Promise<void> {
   const passwordHash = await hashPassword(DEMO_PASSWORD);
@@ -52,13 +78,26 @@ export async function seedCast(prisma: PrismaClient): Promise<void> {
     });
   }
 
-  // Jashim's three-seat Bullet.
+  // Jashim's three-seat Bullet, set to his usual route.
   const jashim = await prisma.user.findUniqueOrThrow({
     where: { email: 'jashim@teslapool.test' },
+  });
+  const route = await prisma.route.findUniqueOrThrow({
+    where: { code: JASHIM_ROUTE_CODE },
   });
   await prisma.vehicle.upsert({
     where: { driverId: jashim.id },
     update: { name: 'Bullet', seatCapacity: 3 },
-    create: { driverId: jashim.id, name: 'Bullet', seatCapacity: 3 },
+    create: {
+      driverId: jashim.id,
+      name: 'Bullet',
+      seatCapacity: 3,
+      routeId: route.id,
+    },
+  });
+  // An older database may have Bullet without a route; never overwrite one Jashim chose.
+  await prisma.vehicle.updateMany({
+    where: { driverId: jashim.id, routeId: null },
+    data: { routeId: route.id },
   });
 }
