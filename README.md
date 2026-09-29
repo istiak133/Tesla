@@ -254,7 +254,38 @@ See [`decisions.md`](decisions.md). A summary is added at release *(coming)*.
 
 ## AI Usage
 
-*(completed at release)*
+**Tool:** Claude (Anthropic), through Claude Code in VS Code.
+
+**How the work was split.** I owned the product and the engineering decisions; Claude was my research partner and wrote the code to those decisions.
+
+| | Me | Claude |
+|---|---|---|
+| Product and business | What to build, the USP (en-route pooling on fixed routes), the pricing rules and who earns what | Researched options, ran the numbers (e.g. every trip on every route for the fare split), pointed out risks |
+| Architecture and design | The stack, the layered architecture, the data model, the concurrency approach, every rule in [`docs/assumptions.md`](docs/assumptions.md) | Laid out the options with trade-offs and failure cases (race conditions, edge cases), and gave a recommendation |
+| How the code is written | The rules the code must follow: controller → service → repository, one row lock per vehicle, database guards, money in integer paisa, tests against a real Postgres, readable code over clever code, one approved approach per feature | Wrote the code, tests, migrations and diagrams within those rules |
+| Delivery | Approved each feature's approach before it was built, had every change explained before committing it, committed and merged through PRs with CI | Explained each change, ran the checks, kept [`decisions.md`](decisions.md) up to date |
+
+**How each feature went:** I described the problem and my first idea; Claude researched the options; I chose, and the choice was written down in `decisions.md` with the alternatives and the reason (D-001 to D-011); then Claude implemented it and I checked the result (tests, CI, the running app) before committing.
+
+**Decisions where I went against the AI's recommendation**
+
+| Topic | AI recommended | My decision and why |
+|---|---|---|
+| Backend framework | Fastify (lighter, built-in logging and validation) | **NestJS**: its module/controller/service structure enforces the layered architecture I wanted. |
+| ORM | Drizzle | **Prisma**, with raw SQL only for the vehicle lock and the hand-written CHECK constraints. |
+| En-route pooling | Keep same-zone pooling and defer en-route pickups, to meet the deadline | **Build it** (D-008): picking people up along the route until the car is full is the product. It shipped with its own race tests. |
+| Fare split | The first model let the driver keep all cash, so the sharing discount was the driver's loss | **Three-party model** (D-010): I set the rule that the driver must never pay for a discount and the platform must earn. The driver is paid for the work, and a test over every possible trip proves nobody loses money. |
+
+**One suggestion accepted, one rejected** (the PRD's format)
+
+- **Accepted: "one vehicle = one line".** Every change to a vehicle's seats or trip locks that vehicle's row, backed by CHECK constraints and partial unique indexes. I chose it over Redis locks, queues and serializable transactions because the database guarantees correctness even if the code has a bug, it needs no extra infrastructure, and it can be tested with real races (20 riders for the last seat, "the car leaves" against "a rider joins at that stop").
+- **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead (D-009).
+
+**What I checked myself**
+- Every claim is backed by a test: 52 unit and 39 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
+- A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release (D-011).
+- No secrets, keys or personal data were given to the AI. Demo accounts use the reserved `.test` domain.
 
 ## Demo video
 
