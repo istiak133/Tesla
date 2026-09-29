@@ -3,17 +3,59 @@
 import { hashPassword } from '../auth/password.js';
 import { kmFromStart, routeDirections } from '../geography/dhaka-routes.js';
 import { DISTANCE_KM, ZONES } from '../geography/dhaka-zones.js';
-import { PrismaClient, Role } from '../generated/prisma/client.js';
+import {
+  IdDocumentType,
+  PrismaClient,
+  Role,
+} from '../generated/prisma/client.js';
 
 // Shared demo password, listed in the README. For local and demo use only.
 export const DEMO_PASSWORD = 'tesla1234';
 
+// Demo contact details (D-015); the phone numbers are made up.
+const DHAKA = 'Dhaka 1213';
 export const CAST = [
-  { name: 'Jashim', email: 'jashim@teslapool.test', role: Role.DRIVER },
-  { name: 'Nusrat', email: 'nusrat@teslapool.test', role: Role.PASSENGER },
-  { name: 'Rafiq', email: 'rafiq@teslapool.test', role: Role.PASSENGER },
-  { name: 'Shirin', email: 'shirin@teslapool.test', role: Role.PASSENGER },
+  {
+    name: 'Jashim',
+    email: 'jashim@teslapool.test',
+    role: Role.DRIVER,
+    phone: '+8801700000001',
+    presentAddress: `House 7, Road 11, Banani, ${DHAKA}`,
+    permanentAddress: 'Village Char Kalia, Kishoreganj',
+  },
+  {
+    name: 'Nusrat',
+    email: 'nusrat@teslapool.test',
+    role: Role.PASSENGER,
+    phone: '+8801700000002',
+    presentAddress: `House 21, Road 11, Banani, ${DHAKA}`,
+    permanentAddress: 'Zindabazar, Sylhet',
+  },
+  {
+    name: 'Rafiq',
+    email: 'rafiq@teslapool.test',
+    role: Role.PASSENGER,
+    phone: '+8801700000003',
+    presentAddress: `House 4, Road 2, Banani, ${DHAKA}`,
+    permanentAddress: 'Kandirpar, Cumilla',
+  },
+  {
+    name: 'Shirin',
+    email: 'shirin@teslapool.test',
+    role: Role.PASSENGER,
+    phone: '+8801700000004',
+    presentAddress: 'House 9, Road 5, Mohakhali DOHS, Dhaka 1206',
+    permanentAddress: 'Sadar Road, Barishal',
+  },
 ];
+
+// Jashim's documents and his car's plate, for the demo only.
+const JASHIM_DOCUMENTS = {
+  idType: IdDocumentType.NID,
+  idNumber: '1000000001',
+  licenceNumber: 'DK0000001C00001',
+};
+const BULLET_PLATE = 'DHAKA METRO-GA 11-0001';
 
 export async function seedGeography(prisma: PrismaClient): Promise<void> {
   const zoneIdByCode = new Map<string, string>();
@@ -75,7 +117,13 @@ export async function seedCast(prisma: PrismaClient): Promise<void> {
   for (const person of CAST) {
     await prisma.user.upsert({
       where: { email: person.email },
-      update: { name: person.name, role: person.role },
+      update: {
+        name: person.name,
+        role: person.role,
+        phone: person.phone,
+        presentAddress: person.presentAddress,
+        permanentAddress: person.permanentAddress,
+      },
       create: { ...person, passwordHash },
     });
   }
@@ -91,13 +139,19 @@ export async function seedCast(prisma: PrismaClient): Promise<void> {
   const banani = await prisma.zone.findUniqueOrThrow({
     where: { code: 'BAN' },
   });
+  await prisma.driverProfile.upsert({
+    where: { userId: jashim.id },
+    update: JASHIM_DOCUMENTS,
+    create: { userId: jashim.id, ...JASHIM_DOCUMENTS },
+  });
   await prisma.vehicle.upsert({
     where: { driverId: jashim.id },
-    update: { name: 'Bullet', seatCapacity: 3 },
+    update: { name: 'Bullet', seatCapacity: 3, plateNumber: BULLET_PLATE },
     create: {
       driverId: jashim.id,
       name: 'Bullet',
       seatCapacity: 3,
+      plateNumber: BULLET_PLATE,
       routeId: route.id,
       currentZoneId: banani.id,
     },

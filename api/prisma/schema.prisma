@@ -21,19 +21,30 @@ enum Role {
   DRIVER
 }
 
-model User {
-  id           String   @id @default(uuid()) @db.Uuid
-  name         String
-  // Always stored in lower case, so "Nusrat@x.com" and "nusrat@x.com" are the same account.
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  role         Role
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+// The identity document a driver signs up with (D-015): one of the two is enough.
+enum IdDocumentType {
+  NID
+  PASSPORT
+}
 
-  sessions   Session[]
-  vehicle    Vehicle?
-  rides      RideRequest[]
-  rideEvents RideEvent[]
+model User {
+  id               String   @id @default(uuid()) @db.Uuid
+  name             String
+  // Always stored in lower case, so "Nusrat@x.com" and "nusrat@x.com" are the same account.
+  email            String   @unique
+  passwordHash     String   @map("password_hash")
+  role             Role
+  // Contact details asked at sign-up (D-015). Null only for accounts made before that.
+  phone            String?  @unique // Bangladeshi mobile, stored as +8801XXXXXXXXX
+  presentAddress   String?  @map("present_address")
+  permanentAddress String?  @map("permanent_address")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  sessions      Session[]
+  driverProfile DriverProfile?
+  vehicle       Vehicle?
+  rides         RideRequest[]
+  rideEvents    RideEvent[]
 
   @@map("users")
 }
@@ -122,6 +133,21 @@ enum RideStatus {
 }
 
 // A driver's vehicle. The row is also the lock for every seat change (RidesRepository.withVehicleLock).
+// What only a driver gives at sign-up (D-015). Checked by a person later (future work).
+model DriverProfile {
+  userId        String         @id @map("user_id") @db.Uuid
+  idType        IdDocumentType @map("id_type")
+  idNumber      String         @map("id_number")
+  licenceNumber String         @unique @map("licence_number")
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The same document cannot be used for two driver accounts.
+  @@unique([idType, idNumber])
+  @@map("driver_profiles")
+}
+
 model Vehicle {
   id            String   @id @default(uuid()) @db.Uuid
   driverId      String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
@@ -130,6 +156,7 @@ model Vehicle {
   isOnline      Boolean  @default(false) @map("is_online")
   routeId       String?  @map("route_id") @db.Uuid // the route the driver drives now; null until chosen
   currentZoneId String?  @map("current_zone_id") @db.Uuid // where the vehicle is; updated at every stop
+  plateNumber   String?  @unique @map("plate_number") // e.g. DHAKA METRO-GA 12-3456; null only for vehicles made before D-015
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   driver      User   @relation(fields: [driverId], references: [id], onDelete: Cascade)

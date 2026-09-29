@@ -46,7 +46,7 @@ export function WaitingRequests() {
           {requests.data.map((request) => (
             <li
               key={request.id}
-              className="rounded-xl border border-zinc-200 p-4"
+              className="rounded-xl border border-stone-200 p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -60,10 +60,10 @@ export function WaitingRequests() {
                       </span>
                     )}
                   </p>
-                  <p className="text-sm text-zinc-600">
+                  <p className="text-sm text-stone-600">
                     {request.pickup} → {request.dropoff}
                   </p>
-                  <p className="mt-0.5 text-xs text-zinc-500">
+                  <p className="mt-0.5 text-xs text-stone-500">
                     {request.distanceKm} km · {request.seats}{" "}
                     {request.seats === 1 ? "seat" : "seats"} ·{" "}
                     {taka(request.estimatedFarePaisa)} ·{" "}
@@ -79,7 +79,7 @@ export function WaitingRequests() {
                 </Button>
               </div>
               {request.reason && (
-                <p className="mt-2 text-xs text-zinc-500">{request.reason}</p>
+                <p className="mt-2 text-xs text-stone-500">{request.reason}</p>
               )}
             </li>
           ))}

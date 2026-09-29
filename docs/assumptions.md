@@ -331,8 +331,11 @@ The three parties are paid separately (`api/src/fares/earnings.ts`, decision D-0
 
 | Rule | Detail |
 |---|---|
-| **Roles** | Each account has exactly one role: `PASSENGER` or `DRIVER`. |
-| **Vehicles** | A driver owns exactly one vehicle. Bullet's capacity is 3. |
+| **Roles** | Each account has exactly one role: `PASSENGER` or `DRIVER`, chosen first on the login and sign-up pages. Login checks the chosen type against the account. |
+| **Sign-up details** | Everyone: full name, email, a Bangladeshi mobile number (stored as `+8801XXXXXXXXX`), password (8+ characters), present and permanent address. Drivers also: an NID (10, 13 or 17 digits) **or** a passport (1–2 letters + 7–8 digits), a driving licence number, and their car's name and number plate. |
+| **One person, one account** | Email, phone, identity document, licence and plate are each unique. A driver's user, documents and car are saved together or not at all. |
+| **Not verified yet** | Phones are not verified by OTP and documents are not checked by a person; a new driver can drive at once. Both are planned (decision D-015). |
+| **Vehicles** | A driver owns exactly one vehicle, created at sign-up with 3 seats and no route or location yet. Bullet's capacity is 3. |
 | **Seats per request** | 1 to 3, never more than the vehicle's capacity. |
 | **Visibility** | A passenger sees only their own rides and fares, plus where the car is on the route. A driver sees only the members of their own pools. |
 | **Pool members** | Passengers in the same pool see each other's first name only, never fares. |
@@ -388,3 +391,4 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-21 | The driver earns ৳10 per carried km + ৳20 per pickup; the platform keeps the rest of the fares. | [7.2](#72-who-gets-what-passenger-driver-platform) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
 | A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |
+| A-22 | Both account types sign up on their own; drivers give an NID or passport, a licence and their car; no OTP or document check yet. | [8](#8-users-vehicles--access) |

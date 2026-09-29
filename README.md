@@ -4,9 +4,9 @@
 
 A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-seat **Bullet**, and passengers **Nusrat**, **Rafiq** and **Shirin**.
 
-- 🌐 **Live demo:** https://tesla-pool-one.vercel.app (one-click demo accounts on the login page)
+- 🌐 **Live demo:** https://tesla-pool-one.vercel.app (choose Passenger or Driver, then a one-click demo account)
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
-- 🧪 **Quality:** 67 unit and 45 end-to-end tests against PostgreSQL, CI on every pull request
+- 🧪 **Quality:** 72 unit and 53 end-to-end tests against PostgreSQL, CI on every pull request
 
 ---
 
@@ -27,8 +27,14 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 ## ✨ Features implemented
 
+**🔐 Accounts**
+- Two account types, chosen first on both login and sign-up: **Passenger** or **Driver**
+- Sign-up asks what real ride apps ask: full name, email, Bangladeshi mobile number, password, present and permanent address
+- Drivers also give **an NID or a passport** (their choice), a driving licence number, and their Tesla (name and number plate); the car gets 3 seats
+- Values are tidied before saving (`01712-345678` → `+8801712345678`, documents and plates in capitals); each email, phone, document, licence and plate belongs to one account
+- Login checks the account type too; a server-side session in an httpOnly cookie; logout
+
 **🧑 Passenger**
-- Sign-up, login and logout, with a server-side session in an httpOnly cookie
 - Request a ride with a solo fare estimate; only trips a route serves are offered
 - Automatic join into the **nearest** Tesla on its way (the one that reaches the pickup in the fewest km)
 - Live status with the route drawn and the car on it
@@ -62,9 +68,13 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 ## 📸 Screenshots
 
-| Login with demo accounts | Shirin joins Bullet on the way, at Mohakhali |
+| Login: choose Passenger or Driver, then a demo account | Driver sign-up: NID or passport, licence and the car |
 |---|---|
-| ![Login](docs/screenshots/login.png) | ![Passenger matched](docs/screenshots/passenger-matched.png) |
+| ![Login](docs/screenshots/login.png) | ![Driver sign-up](docs/screenshots/signup-driver.png) |
+
+| Shirin joins Bullet on the way, at Mohakhali | Waiting requests, nearest pickup first |
+|---|---|
+| ![Passenger matched](docs/screenshots/passenger-matched.png) | ![Driver requests](docs/screenshots/driver-requests.png) |
 
 | Jashim at Mohakhali: Nusrat gets off, Shirin gets on | Nusrat paid ৳60 for sharing a hop |
 |---|---|
@@ -97,6 +107,7 @@ flowchart LR
 erDiagram
     USERS ||--o{ SESSIONS : "logs in with"
     USERS ||--o| VEHICLES : "drives"
+    USERS ||--o| DRIVER_PROFILES : "documents"
     USERS ||--o{ RIDE_REQUESTS : "requests"
     ZONES ||--o{ ZONE_DISTANCES : "km between"
     ROUTES ||--|{ ROUTE_STOPS : "stops in order"
@@ -109,8 +120,15 @@ erDiagram
     RIDE_REQUESTS ||--o{ RIDE_EVENTS : "history"
     ZONES ||--o{ RIDE_REQUESTS : "pickup / drop-off"
 
+    DRIVER_PROFILES {
+        uuid user_id PK
+        enum id_type "NID or PASSPORT"
+        text id_number "unique with id_type"
+        text licence_number "unique"
+    }
     VEHICLES {
         uuid id PK
+        text plate_number "unique"
         int seat_capacity "CHECK > 0"
         bool is_online
         uuid route_id FK
@@ -154,13 +172,14 @@ erDiagram
 
 | Table | What it holds | Key constraints and indexes |
 |---|---|---|
-| `users` | Passengers and drivers, one role each | `email` unique, `CHECK email = lower(email)`; `role` is an enum |
+| `users` | Passengers and drivers, one role each, with phone and present and permanent address | `email` unique, `CHECK email = lower(email)`; `phone` unique, `CHECK` +8801XXXXXXXXX; `role` is an enum |
+| `driver_profiles` | What only a driver gives: NID or passport (type + number) and driving licence | primary key `user_id`; unique (id type, number) and licence; `CHECK` the number fits the type (NID 10/13/17 digits, passport letters + digits) |
 | `sessions` | One row per login: the SHA-256 hash of the cookie token and its expiry | `token_hash` unique; index on `user_id`; deleted at logout |
 | `zones` | The 14 Dhaka zones | `code` and `name` unique |
 | `zone_distances` | Direct km between every ordered pair of zones (182 rows); sets the fare | primary key (from, to); `CHECK km > 0`, `CHECK from <> to` |
 | `routes` | The six fixed routes (each direction on its own) | `code` and `name` unique |
 | `route_stops` | The zones of a route in driving order, with km from the first stop | primary key (route, position); unique (route, zone); `CHECK position ≥ 0`, `CHECK km_from_start ≥ 0` |
-| `vehicles` | Each driver's car: seats, online, chosen route, current zone. **Its row is the lock** for every seat change | `driver_id` unique (one car per driver); `CHECK seat_capacity > 0` |
+| `vehicles` | Each driver's car: name, number plate, seats, online, chosen route, current zone. **Its row is the lock** for every seat change | `driver_id` unique (one car per driver); `plate_number` unique; `CHECK seat_capacity > 0` |
 | `pools` | One trip of a car along its route: where it is (`status` + `current_stop`), seats taken, and the money split once completed | `CHECK seats_taken BETWEEN 0 AND seat_capacity`; **one active pool per vehicle** (partial unique index); `CHECK collected = driver + platform`; index on (status, route) for finding joinable trips |
 | `pool_members` | A ride's seats in a pool, from its pickup stop to its drop-off stop | **one active seat per ride** (partial unique on `left_at IS NULL`); `CHECK pickup_stop < dropoff_stop`; index on `pool_id` |
 | `ride_requests` | A passenger's trip: zones, seats, status, direct km, solo estimate and final fare | **one active ride per passenger** (partial unique); `CHECK seats 1..3`, `CHECK pickup <> drop-off`, `CHECK fares ≥ 0`; indexes on (status, created) for the waiting list and (passenger, created) for history |
@@ -308,11 +327,13 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | Cancellation rules, no-shows, the driver's trip cancel, and a cancel racing a trip cancel | `api/test/trip.e2e-spec.ts` |
 | Nobody loses money on any trip any route can sell (about 25,000 cases) | `api/src/fares/earnings.spec.ts` |
 | Matching by the car's position: new trips start at the car, pickups behind are refused, the nearest car wins auto-join over an older trip, the list is nearest first with aging | `api/src/pooling/matching.spec.ts`, `api/test/matching.e2e-spec.ts` |
+| Sign-up for both account types (every field checked, NID or passport, duplicates refused with nothing half made), login with the account type, and a new driver taking a real ride | `api/src/auth/identity.spec.ts`, `api/test/auth.e2e-spec.ts` |
 | Everything together, from sign-up to the driver's earnings | `api/test/full-journey.e2e-spec.ts` |
 
 ## 🔑 Demo credentials
 
 - 🔐 All demo accounts use the password **`tesla1234`** (local and demo use only).
+- 👆 On the login page, choose **Passenger** or **Driver** first; the demo accounts of that type appear below the form.
 
 | Name | Email | Role |
 |---|---|---|
@@ -344,8 +365,9 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | `200 {"status":"ok","database":"up"}` or `503` when the database is unreachable |
-| POST | `/auth/signup` | Create a passenger account and log in (sets the session cookie) |
-| POST | `/auth/login` | Log in with email and password (sets the session cookie); 5 attempts per minute (sign-up too) |
+| POST | `/auth/signup/passenger` | Create a passenger account (name, email, phone, password, addresses) and log in |
+| POST | `/auth/signup/driver` | The same plus NID or passport, licence, car name and plate: user, documents and car in one transaction |
+| POST | `/auth/login` | Log in with the account type, email and password (sets the session cookie); 5 attempts per minute (sign-up too) |
 | POST | `/auth/logout` | End the session and clear the cookie |
 | GET | `/auth/me` | The logged-in user |
 | GET | `/zones` | The 14 zones for pickup and destination |
@@ -376,10 +398,10 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | Status | When |
 |---|---|
 | `400` | Invalid input (DTO validation, unknown fields), `INVALID_ZONE`, `NO_ROUTE` |
-| `401` | No valid session cookie, or wrong email/password |
+| `401` | No valid session cookie, or wrong email/password; `WRONG_ACCOUNT_TYPE` when the password is right but the other account type was chosen (said only after the password matched) |
 | `403` | Wrong role for the route, `NOT_YOUR_RIDE`, `NO_VEHICLE` |
 | `404` | `NOT_FOUND` (ride, route, zone, or a passenger not in this trip) |
-| `409` | Business rules: `SEATS_UNAVAILABLE`, `NOT_COMPATIBLE`, `ALREADY_TAKEN`, `INVALID_TRANSITION`, `ACTIVE_RIDE_EXISTS`, `HAS_ACTIVE_POOL`, `NO_ACTIVE_POOL`, `DRIVER_OFFLINE`, `ROUTE_REQUIRED`, `POOL_NOT_OPEN`, or an email already registered |
+| `409` | Business rules: `SEATS_UNAVAILABLE`, `NOT_COMPATIBLE`, `ALREADY_TAKEN`, `INVALID_TRANSITION`, `ACTIVE_RIDE_EXISTS`, `HAS_ACTIVE_POOL`, `NO_ACTIVE_POOL`, `DRIVER_OFFLINE`, `ROUTE_REQUIRED`, `POOL_NOT_OPEN`; `ALREADY_REGISTERED` with the `field` (email, phone, idNumber, licenceNumber, plateNumber) |
 | `429` | More than 5 sign-up or login attempts per minute |
 | `503` | `BUSY`: the vehicle's lock was held for more than 3 s; safe to retry |
 
@@ -391,7 +413,8 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 - 🍪 **Sessions:** a random 32-byte token in an httpOnly, SameSite=Lax cookie (Secure in production), 12 h; only its SHA-256 hash is stored, so a database leak does not expose live sessions. Logout deletes the row.
 - 🌐 **Same origin:** the browser only talks to the web app; `/api/*` is forwarded to the API, so there is no CORS to configure.
 - 🚪 **Access control:** a session guard on every private route, a role guard (passenger vs driver), and an ownership check in the service (`403 NOT_YOUR_RIDE`). Co-riders see only first names, never fares.
-- ✅ **Input:** a whitelisting `ValidationPipe`, UUID checks on every id in the URL, and database CHECKs as the last line.
+- ✅ **Input:** a whitelisting `ValidationPipe` (a client cannot send its own role), UUID checks on every id in the URL, and database CHECKs as the last line. Sign-up values are normalised first; the phone, NID and passport formats are checked again by CHECK constraints.
+- 🪪 **One person, one account:** unique indexes on email, phone, (document type, number), licence and plate; a driver's user, documents and car are created in one transaction, so a refused sign-up leaves nothing behind.
 - 🚦 **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login, counted per real client: the first `X-Forwarded-For` address, which Vercel sets and overwrites. Counting proxy hops was not stable behind Vercel and Render (found by the live stress test, fixed in v1.0.1).
 - 🔒 **Secrets:** no real secrets in the repository, only `.env.example` files and the local-only Docker defaults in `docker-compose.yml`; the production database URL lives only in Render's settings. Logs redact cookies, authorization headers and `Set-Cookie`; the API refuses to start with invalid configuration.
 
@@ -554,6 +577,7 @@ flowchart LR
 | No seat hold: a fitting request takes its seat at once | The driver does not approve each join; they keep control through the route, accept, no-show and cancel |
 | Polling every 3 s | Some wasted requests; simple and reliable on free hosting |
 | Sessions in the database through a same-origin proxy | One database lookup per request; no CORS, revocable sessions |
+| Account type chosen first; separate passenger and driver sign-up | Two endpoints and two forms to keep in step; each gets only the fields it needs, and a client can never pick its own role |
 | Pull requests with CI gates and merge commits into a protected `master` | Slower than pushing directly; the history shows every step |
 
 ## 🚧 Known limitations
@@ -566,7 +590,7 @@ flowchart LR
 - 🔁 **Polling, not push.** Screens refresh every 3 s, route suggestions every 5 s, histories every 10 s.
 - 🔂 **No idempotency key.** A retried request gets a `409` rather than the original answer.
 - ⌛ **Requests do not expire.** A waiting request stays until it is matched or cancelled.
-- 🧪 **Demo helpers.** The login page has one-click demo accounts and the demo password is public; both are for the reviewer and must be turned off in a real deployment. Drivers cannot sign up (they are onboarded by the operator; one is seeded).
+- 🧪 **Demo helpers.** The login page has one-click demo accounts and the demo password is public; both are for the reviewer and must be turned off in a real deployment. Drivers sign up on their own: their documents are stored but not yet checked by a person, and phone numbers are not verified (no OTP yet).
 - 🗑️ **Expired sessions are rejected but not deleted;** a cleanup job is not built.
 - 🚦 **Rate limit on direct API calls.** Through the web app the client address cannot be faked, but a caller who hits the API URL directly could send a fake `X-Forwarded-For` to dodge the login limit. The fix is a gateway rate limit or accepting API traffic only from the web proxy.
 - 😴 **Hosting.** The free API tier sleeps when idle (slow first request), and the API image is large (~790 MB) because it includes the Prisma CLI to run migrations at start.
@@ -586,7 +610,11 @@ flowchart LR
 | **More routes, live GPS and dispatch** | Add routes from real demand (the zone pairs we cannot sell today). The driver app sends its position every few seconds; a geo index finds nearby cars on routes that pass the pickup; the request is offered to the best car and the driver accepts within a few seconds, or it goes to the next. A Leaflet + OpenStreetMap map on both screens. |
 | **Driver pay per minute and for dead km** | Store the arrive and depart time of each stop, add a per-minute rate and a small rate for driving to the first pickup, then re-run the exhaustive earnings test with the new rates before release, so no trip loses money. |
 | **TeslaPay wallet** | A double-entry ledger table. Paying a fare and deducting the platform fee happen in one transaction with a conditional update (`balance >= amount`), so a balance can never go negative. |
-| **Operations** | Driver onboarding (the operator creates the driver and vehicle after document checks), an admin view of trips and fees owed, a scheduled job that deletes expired sessions, and a `DEMO_MODE` flag that hides the demo buttons and skips demo accounts in production. |
+| **Phone OTP** | At sign-up and on a new device: a 6-digit code by SMS, stored as a hash with a 5-minute expiry and 5 tries, then `phone_verified_at` on the user. Ride requests and going online need a verified phone. |
+| **Document checks for drivers** | A `verification_status` on `driver_profiles` (pending → approved / rejected), photos of the NID or passport and the licence in object storage, and an admin screen. A driver goes online only when approved. |
+| **JWT for mobile apps** | Keep the cookie session for the web. For native apps: a short-lived access JWT (15 min) and a rotating refresh token stored as a hash (like today's sessions), so logout and stolen-token revocation still work. |
+| **Google sign-in** | OAuth 2.0 / OpenID Connect with Google: verify the ID token, link by verified email in an `auth_identities` table (provider, subject), then ask only for what Google does not give (phone, address, and for drivers the documents). |
+| **Operations** | An admin view of trips and fees owed, a scheduled job that deletes expired sessions, and a `DEMO_MODE` flag that hides the demo buttons and skips demo accounts in production. |
 | **Scale** | The steps in the Bonus section above, in that order: connection pooler, replicas for reads, push updates, then partitioning by city area. |
 
 ## 🤖 AI Usage
@@ -622,7 +650,7 @@ flowchart LR
 - ❌ **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **🔎 What I checked myself**
-- 🧪 The core rules are backed by tests: 67 unit and 45 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- 🧪 The core rules are backed by tests: 72 unit and 53 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - 🤖 CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - 🕵️ A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - 🌐 A live stress test through the public URL (63 checks, including the races over the real network) found that the login rate limit did not count the real client behind Vercel and Render. It was fixed and re-checked live (v1.0.1).

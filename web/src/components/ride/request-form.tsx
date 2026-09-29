@@ -101,8 +101,8 @@ export function RequestForm() {
                   onClick={() => setSeats(count)}
                   className={`h-10 w-12 rounded-lg border text-sm font-medium transition ${
                     seats === count
-                      ? "border-zinc-900 bg-zinc-900 text-white"
-                      : "border-zinc-300 bg-white hover:border-zinc-500"
+                      ? "border-stone-900 bg-stone-900 text-white"
+                      : "border-stone-300 bg-paper hover:border-stone-500"
                   }`}
                 >
                   {count}
@@ -112,7 +112,7 @@ export function RequestForm() {
           </Field>
 
           {pickupZoneId !== "" && dropoffZoneId !== "" && (
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-stone-500">
               A Tesla already on its route can pick you up if it has not passed
               your stop.
             </p>
@@ -120,7 +120,7 @@ export function RequestForm() {
           {request.isError && <ErrorNote message={request.error.message} />}
 
           <div className="flex items-center justify-between gap-4 pt-1">
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-stone-500">
               Fare: (৳30 + ৳15 per km) × seats. 20% off if you share any hop
               with another passenger.
             </p>
