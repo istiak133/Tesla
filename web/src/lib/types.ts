@@ -71,3 +71,18 @@ export type DriverState = {
     }[];
   } | null;
 };
+
+export type PastTrip = {
+  id: string;
+  status: RideStatus;
+  pickup: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  totalFarePaisa: number;
+  passengers: {
+    name: string;
+    dropoff: string;
+    seats: number;
+    finalFarePaisa: number | null;
+  }[];
+};

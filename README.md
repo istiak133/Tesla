@@ -199,6 +199,7 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |
 | POST | `/driver/requests/:id/accept` | Driver: accept (creates the pool or adds to the open one) |
 | GET | `/driver/pool` | Driver: vehicle and current trip with its passengers |
+| GET | `/driver/trips` | Driver: past trips with passengers and fares |
 | POST | `/driver/pool/arrive`, `/start`, `/complete` | Driver: move the trip forward (409 out of order); start locks the fares |
 | POST | `/driver/pool/cancel` | Driver: cancel before the start; passengers return to waiting |
 

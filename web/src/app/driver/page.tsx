@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { CurrentTrip } from "@/components/driver/current-trip";
+import { PastTrips } from "@/components/driver/past-trips";
 import { WaitingRequests } from "@/components/driver/waiting-requests";
 import { Button, ErrorNote, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -67,6 +68,7 @@ function DriverHome() {
         <CurrentTrip state={state.data} />
         <WaitingRequests />
       </div>
+      <PastTrips />
     </div>
   );
 }
