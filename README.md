@@ -155,9 +155,9 @@ Money is integer paisa everywhere, times are `timestamptz` (UTC, shown in Dhaka 
 
 | Layer | Choice |
 |---|---|
-| Frontend | Next.js 16 (App Router), React 19, Tailwind CSS |
+| Frontend | Next.js 16 (App Router), React 19, Tailwind CSS 4, TanStack Query |
 | Backend | NestJS 12 (REST), TypeScript |
-| Database | PostgreSQL 17, Prisma 7 (migrations, typed client) |
+| Database | PostgreSQL (17 in Docker, Neon in production), Prisma 7 (migrations, typed client) |
 | Validation | class-validator / class-transformer |
 | Logging | pino (nestjs-pino) |
 | Tests | Vitest + Supertest, integration tests against real PostgreSQL |
@@ -372,13 +372,13 @@ On the web, every error is shown next to the action that caused it, and a `401` 
 
 ### Security basics
 
-- **Passwords:** bcrypt (cost 10), at least 8 characters; never logged or returned.
+- **Passwords:** bcrypt (cost 10), at least 8 characters at sign-up; never returned by the API, and request bodies are not logged.
 - **Sessions:** a random 32-byte token in an httpOnly, SameSite=Lax cookie (Secure in production), 12 h; only its SHA-256 hash is stored, so a database leak does not expose live sessions. Logout deletes the row.
 - **Same origin:** the browser only talks to the web app; `/api/*` is forwarded to the API, so there is no CORS to configure.
 - **Access control:** a session guard on every private route, a role guard (passenger vs driver), and an ownership check in the service (`403 NOT_YOUR_RIDE`). Co-riders see only first names, never fares.
 - **Input:** a whitelisting `ValidationPipe`, UUID checks on every id in the URL, and database CHECKs as the last line.
 - **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login, counted per real client: the first `X-Forwarded-For` address, which Vercel sets and overwrites, because counting proxy hops was not stable behind Vercel and Render (found by the live stress test, fixed in v1.0.1).
-- **Secrets:** none in the repository (only `.env.example`); logs redact cookies and authorization headers; the API refuses to start with invalid configuration.
+- **Secrets:** no real secrets in the repository: only `.env.example` files and the local-only Docker defaults in `docker-compose.yml`; the production database URL lives only in Render's settings. Logs redact cookies, authorization headers and `Set-Cookie`; the API refuses to start with invalid configuration.
 
 ## Fare model
 
@@ -392,7 +392,7 @@ On the web, every error is shown next to the action that caused it, and a `401` 
 
 Taking over a seat at the stop where someone else got off is not sharing: both pay their solo fare.
 
-**Who gets the money.** The driver is paid for the work, not from the fares: **৳10 per km** with a passenger on board **+ ৳20 per pickup**. The platform keeps the rest. So a sharing discount never comes out of the driver's pocket: it is paid for by the extra passengers. For the story trip, ৳240 is collected, Jashim earns ৳180 and the platform keeps ৳60. Routes only sell trips that add at most 2 km or 40% to the direct distance, and a unit test checks every trip every route can sell: nobody loses money.
+**Who gets the money.** The driver is paid for the work, not from the fares: **৳10 per km** with a passenger on board **+ ৳20 per pickup**. The platform keeps the rest. So a sharing discount never comes out of the driver's pocket: it is paid for by the extra passengers. For the story trip, ৳240 is collected, Jashim earns ৳180 and the platform keeps ৳60. Routes only sell trips that add at most 2 km or 40% to the direct distance, and a unit test checks every trip every route can sell, alone and in every group of up to three bookings (about 25,000 cases): the platform always keeps at least ৳10 and the driver is always paid, so nobody loses money.
 
 ### Routes and matching rules
 
@@ -413,7 +413,7 @@ A request joins a trip only if all four hold, checked again under the vehicle lo
 | **R3** Seats | Free seats ≥ seats requested |
 | **R4** Active | The trip is still running and the driver is online |
 
-A new request joins the oldest trip that fits; otherwise it waits and drivers see it with the reason it does not fit. The driver picks a route before going online (the system suggests the one with the most riders waiting ahead) and keeps it until the trip ends. Passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting.
+A new request joins the oldest trip that fits (if that car stays busy for more than 3 s, the request simply waits); otherwise it waits and drivers see it with the reason it does not fit. The driver picks a route before going online (the system suggests the one with the most riders waiting ahead) and keeps it until the trip ends. Passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting.
 
 ## Concurrency: Bullet's last seat
 
@@ -457,7 +457,7 @@ flowchart LR
 | Ride matching | Keep R1–R4 as the rule. Candidate search runs without a lock (as today); only the final seat is taken under the car's lock. For a very busy area, feed requests through a per-area queue so matching there runs in order. |
 | Queues and events | After a commit, publish "seat taken", "arrived", "dropped off" to an event stream (transactional outbox, so no event is lost or sent for a rolled-back change). Workers handle notifications, fee settlement and analytics outside the request. |
 | Real-time communication | Replace polling with SSE or WebSockets fed by the event stream; keep adaptive polling as a fallback. |
-| Rate limiting | Per user and per IP at the load balancer (as login and sign-up already are), stricter on ride requests and driver actions. |
+| Rate limiting | Per user and per IP at the load balancer (today only sign-up and login are limited, per client IP), stricter on ride requests and driver actions. |
 | Idempotency | An `Idempotency-Key` header on every write; the first response is stored with the key and returned for any retry, so a double tap on a slow network never books twice. |
 | Retry and failure strategy | A lock wait over 3 s already returns `503 BUSY`; clients retry with backoff and the same idempotency key. Auto-join is best effort: if it fails, the ride simply waits. Health checks remove broken instances. |
 | Observability | Already structured JSON logs with a request id per request. Add metrics (seat decisions/s, lock waits, `BUSY` rate, p95 latency), tracing across web → API → database, and alerts on `BUSY` spikes. |
@@ -486,7 +486,7 @@ What we would **not** add without a measured reason: microservices per feature, 
 - **Seats are counted per trip, not per stretch.** Anyone not yet dropped off holds their seat, so a join that would fit later on the route can be refused until someone gets off.
 - **Driver pay has no time component.** No per-minute rate for traffic, no pay for driving to the first pickup or empty stretches, no surge or incentives.
 - **Cash only.** The platform fee is recorded per trip, not collected.
-- **Polling, not push.** Screens refresh every 3 s (history every 10 s).
+- **Polling, not push.** Screens refresh every 3 s, route suggestions every 5 s, histories every 10 s.
 - **No idempotency key.** A retried request gets a `409` rather than the original answer.
 - **Requests do not expire.** A waiting request stays until it is matched or cancelled.
 - **Demo helpers.** The login page has one-click demo accounts and the demo password is public; both are for the reviewer and must be turned off in a real deployment. Drivers cannot sign up (they are onboarded by the operator; one is seeded).
@@ -541,9 +541,10 @@ Each one, with how we would build it:
 - **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **What I checked myself**
-- Every claim is backed by a test: 55 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- The core rules are backed by tests: 55 unit and 40 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
+- A live stress test through the public URL (63 checks, including the races over the real network) found that the login rate limit did not count the real client behind Vercel and Render. It was fixed and re-checked live (v1.0.1).
 - No secrets, keys or personal data were given to the AI. Demo accounts use the reserved `.test` domain.
 
 ## Demo video
