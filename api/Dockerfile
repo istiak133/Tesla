@@ -32,5 +32,5 @@ USER node
 
 EXPOSE 3001
 
-# Apply pending database migrations, then start the API.
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+# Apply pending migrations, upsert the demo cast (safe to repeat), then start the API.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/seed/seed.js && node dist/main.js"]

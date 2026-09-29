@@ -53,6 +53,19 @@ export class EnvironmentVariables {
   @Min(1)
   @Max(50)
   DATABASE_POOL_MAX: number = 5;
+
+  // How long a login lasts before the user has to sign in again.
+  @IsInt()
+  @Min(1)
+  @Max(168)
+  SESSION_TTL_HOURS: number = 12;
+
+  // How many proxies sit in front of the API (Next.js proxy, hosting load balancer).
+  // Used to find the real client IP for rate limiting. Set per deployment.
+  @IsInt()
+  @Min(0)
+  @Max(5)
+  TRUST_PROXY_HOPS: number = 1;
 }
 
 export function validateEnv(

@@ -21,6 +21,9 @@ explain afterwards exactly what happened.
 
 ## Features implemented
 
+- Passenger sign-up, login and logout with server-side sessions in an httpOnly cookie
+- Role-based access (passenger / driver) and rate-limited login
+- Seed data with the story cast (Jashim the driver, Nusrat, Rafiq, Shirin)
 - Health endpoint with a real database check (`GET /health`)
 - Structured JSON logging with a request id per request
 - Environment validation at startup (the app refuses to start with bad config)
@@ -94,7 +97,7 @@ Never commit real secrets. Only the `.env.example` files are committed.
 | File | Used by | Variables |
 |---|---|---|
 | [`.env.example`](.env.example) | Docker Compose | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DB_HOST_PORT`, `LOG_LEVEL`, `DATABASE_POOL_MAX` |
-| [`api/.env.example`](api/.env.example) | API outside Docker | `NODE_ENV`, `PORT`, `LOG_LEVEL`, `DATABASE_URL`, `DATABASE_POOL_MAX` |
+| [`api/.env.example`](api/.env.example) | API outside Docker | `NODE_ENV`, `PORT`, `LOG_LEVEL`, `DATABASE_URL`, `DATABASE_POOL_MAX`, `SESSION_TTL_HOURS`, `TRUST_PROXY_HOPS` |
 | [`web/.env.example`](web/.env.example) | Web outside Docker | `API_URL` |
 
 ## Run with Docker
@@ -117,7 +120,8 @@ Stop with `docker compose down` (add `-v` to delete the database volume).
 
 Migrations run automatically when the API container starts (`prisma migrate deploy`).
 Outside Docker: `cd api && npm run prisma:deploy`.
-Seed data with the story cast *(coming)*.
+The API container also upserts the story cast on start (safe to repeat).
+Outside Docker: `cd api && npm run build && npm run db:seed`.
 
 ## Run without Docker
 
@@ -146,7 +150,14 @@ production build and the Docker image builds on every pull request.
 
 ## Demo credentials
 
-*(coming, with seed data)*
+All demo accounts use the password **`tesla1234`** (local and demo use only).
+
+| Name | Email | Role |
+|---|---|---|
+| Jashim | `jashim@teslapool.test` | Driver |
+| Nusrat | `nusrat@teslapool.test` | Passenger |
+| Rafiq | `rafiq@teslapool.test` | Passenger |
+| Shirin | `shirin@teslapool.test` | Passenger |
 
 ## Deployment
 
@@ -157,6 +168,12 @@ production build and the Docker image builds on every pull request.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | `200 {"status":"ok","database":"up"}` or `503` when the database is unreachable |
+| POST | `/auth/signup` | Create a passenger account and log in (sets the session cookie) |
+| POST | `/auth/login` | Log in with email and password (sets the session cookie); 5 attempts per minute |
+| POST | `/auth/logout` | End the session and clear the cookie |
+| GET | `/auth/me` | The logged-in user |
+
+Through the web app every path is prefixed with `/api` (e.g. `/api/auth/login`).
 
 More endpoints are added with each feature *(coming)*.
 

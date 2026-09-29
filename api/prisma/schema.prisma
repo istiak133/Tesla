@@ -15,3 +15,36 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum Role {
+  PASSENGER
+  DRIVER
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  // Always stored in lower case, so "Nusrat@x.com" and "nusrat@x.com" are the same account.
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  sessions Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  // SHA-256 of the cookie token. The raw token is never stored.
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}

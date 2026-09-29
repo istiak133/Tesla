@@ -21,7 +21,7 @@ erDiagram
     users {
         uuid id PK
         text name
-        text email "unique lower(email)"
+        text email "unique, stored lower case"
         text password_hash
         enum role "PASSENGER | DRIVER"
         timestamptz created_at
@@ -141,7 +141,7 @@ Not included on purpose: payments (cash only), ratings (optional in the PRD).
 | CHECK | `pools.seats_taken BETWEEN 0 AND seat_capacity` | I1 capacity |
 | CHECK | `vehicles.seat_capacity > 0`, `ride_requests.seats >= 1` | valid data |
 | CHECK | `ride_requests.pickup_area_id <> dropoff_area_id` | E5 |
-| Unique | `lower(users.email)` | G12 duplicate sign-up |
+| Unique + CHECK | `users.email` unique, `CHECK (email = lower(email))`; the app lower-cases emails | G12 duplicate sign-up |
 | Unique | `vehicles.driver_id` | one vehicle per driver |
 | Unique | `sessions.token_hash` | session lookup |
 | Unique | `ride_requests(passenger_id, idempotency_key)` | E6 duplicate submit |
