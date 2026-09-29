@@ -165,6 +165,7 @@ flowchart TD
 - **Where the car is:** on a trip, the pool's current stop; between trips, the stop of `vehicles.current_zone` on the chosen route. **Approach km** is the route distance from that stop to the pickup, only for pickups at or ahead of the car.
 - **Automatic join:** a new request joins the **nearest** active pool that passes R1 – R4 (fewest approach km; on a tie, the older trip). A car that does not fit under its lock (full, passed) is skipped for the next nearest; if a vehicle is busy (lock wait over 3 s), or none fits, the request keeps waiting. Only cars already on a trip are considered.
 - **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool can accept only requests that pass R1 – R4.
+- **Broadcast, first accept wins:** a request that fits no running trip is shown to every driver whose car can take it, and only to them; the first accept gets it (compare-and-set on the request), and the late one is told "Another driver took this request". It leaves every other list at once over Server-Sent Events (decision D-020).
 - **A freed seat is filled at once:** after a cancel, a no-show or a drop-off, the same transaction seats waiting riders who fit, in the waiting-list order below (decision D-017). No driver tap, no seat hold.
 - **Waiting list order:** takeable requests waiting 5 minutes or more first (oldest first, so no one waits for ever), then the other takeable ones by nearest pickup, then the ones the driver cannot take, each with its reason. Every item shows how far ahead its pickup is.
 
@@ -352,7 +353,7 @@ The three parties are paid separately (`api/src/fares/earnings.ts`, decision D-0
 
 | Area | Assumption | Reason |
 |---|---|---|
-| **Live updates** | Screens poll every 3 s (histories every 10 s); actions update the screen immediately. | Simple and reliable on free hosting, and correctness never depends on it (every action is re-checked under the lock). At scale: adaptive polling, then WebSockets or SSE (see D-007). |
+| **Live updates** | Server-Sent Events: after every committed action the API sends a data-free hint and screens refetch their own data (under 0.1 s); polling at 3 s (histories 10 s) only while the stream is down (decision D-020). | Simple and reliable on free hosting, and correctness never depends on it (every action is re-checked under the lock). At scale: adaptive polling, then WebSockets or SSE (see D-007). |
 | **Concurrency** | Every seat or stop change locks the vehicle row inside a transaction, backed by database `CHECK` constraints. | Two passengers racing for the last seat must never both succeed, and the car can never leave a stop while someone is joining there. |
 | **Time zone** | Timestamps are stored in UTC and shown in Asia/Dhaka (UTC+6). | Avoids ambiguity in history and tests. |
 | **Language** | The UI is in English. | Keeps the MVP scope small; Bangla is a future improvement. |
@@ -396,7 +397,8 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-20 | A route sells a trip only if it adds at most 2 km, or 40%, to the direct distance. | [3.3](#33-routes) |
 | A-21 | The driver earns ৳10 per carried km + ৳20 per pickup; the platform keeps the rest of the fares. | [7.2](#72-who-gets-what-passenger-driver-platform) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
-| A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |
+| A-17 | Live status via Server-Sent Events hints, with polling as a fallback; not WebSockets. | [9](#9-technical-assumptions) |
 | A-22 | Both account types sign up on their own; drivers give an NID or passport, a licence and their car; no OTP or document check yet. | [8](#8-users-vehicles--access) |
 | A-23 | A seat freed by a cancel, a no-show or a drop-off goes straight to a waiting rider who fits. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-24 | A late cancel or a no-show costs ৳20 (after a 2-minute grace), paid in cash with the next ride, earned by the driver who came. | [6.1](#61-passenger-cancellation) |
+| A-25 | Idle drivers see only requests their car can take; the first accept wins; changes reach open screens over SSE. | [4.4](#44-automatic-join-and-driver-accept) |

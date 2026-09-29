@@ -991,3 +991,76 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
 - with no location, none
 - moving to Mirpur 10 clears Uttara → Bashundhara and sets the driver offline
 - moving along the chosen route keeps it (`matching.e2e-spec.ts` updated the same way)
+
+---
+
+# Dispatch
+
+## D-020: Broadcast to idle drivers, first accept wins, live updates over SSE (2026-09-30)
+
+**Context (his request).**
+- He wants the Uber-like flow: every request goes to every driver who can take it, the driver who accepts first gets it, and it disappears from the other drivers' screens at once.
+- He also asked about two things:
+  - Should the system pick the first route itself? It should not. If it did, several drivers could be sent to the same busy route at once.
+  - What happens when two people act at the same instant?
+
+**His answers (asked):**
+- **Hybrid.** Cars already on a trip keep automatic seating (auto-join and D-017 refill), because the driver is driving and should not have to tap. Idle cars get the request by broadcast.
+- **Push the change at once over SSE**, not faster polling.
+
+**Correction to "like real Uber":**
+- Uber mostly uses **sequential dispatch**: one driver gets an offer for a few seconds, then the next.
+- What he describes is **broadcast, first accept wins**, used by several South Asian apps.
+- Broadcast is simpler and fills requests faster when many drivers are near. Its cost is drivers racing for the same tap, which is exactly what the lock below settles.
+
+**What is built:**
+- **Only what the car can take:** `GET /driver/requests` lists only the requests this car can take now, best first (D-014 order).
+  - "Can take" means: on its route and direction, pickup at or ahead of the car, and the seats free.
+  - Before, the list also showed requests with a reason why the car could not take them. Now a driver sees exactly the requests they could win. Accepting a hidden one anyway is still refused with that reason.
+- **First accept wins:**
+  - Every accept runs under the accepting car's lock and ends with a compare-and-set `REQUESTED → MATCHED` on the request.
+  - When two drivers accept the same request at the same instant, PostgreSQL's row lock on that request lets one update through. The second then sees `MATCHED`, and its whole transaction rolls back, including the empty trip it had just created.
+  - The loser gets `409 ALREADY_TAKEN` "Another driver took this request" (or "The passenger cancelled this request").
+- **Live updates:**
+  - `GET /events/stream` is a Server-Sent Events stream behind the session guard.
+  - A `PublishChangesInterceptor` on the passenger and driver controllers publishes a hint after every successful action (never on GET, never on failure). The hint goes out after the handler returns, which is after its transaction has committed.
+  - Hints are topics only: `requests` (the waiting set changed; drivers only) and `rides` (some ride or trip changed). They carry no data. Each screen then fetches its own data through the normal authorised endpoints, so nothing private can leak through the stream.
+  - A 25 s heartbeat keeps proxies from closing a quiet stream.
+  - The browser opens one `EventSource` per logged-in tab. It reconnects by itself.
+  - While the stream is up, polling slows to a 30 s safety net; while it is down, polling runs at the old pace (3 s, 5 s, 10 s).
+- **Measured in Docker (browser, two drivers):**
+  - a new request reached both drivers' screens in 83 ms and 94 ms
+  - after Jashim accepted, it left Rahim's screen in 80 ms
+  - Rahim's late tap got the clear `409`
+
+**The races, and what settles each:**
+
+| Race | Settled by | Tested |
+|---|---|---|
+| Two drivers accept the same request at the same instant | The compare-and-set on the request (row lock). Each driver's transaction also holds only its own car's lock, so the two never wait on each other's car | `live-dispatch.e2e-spec.ts`, 5 rounds: exactly one `200`, one `409`, one seat, no empty trip left |
+| Two passengers claim the last seat (the PRD case) | Both requests are stored (separate rows). The seat is taken under the car's lock with a conditional update, and the CHECK is the last guard | `pooling.e2e-spec.ts`, 5 rounds |
+| A driver accepts while auto-join seats the same request in a running trip | The same compare-and-set: the request is seated once | Covered by the compare-and-set; the cancel and refill races use the same path |
+| A driver accepts while the passenger cancels | D-016: the passenger's cancel settles, and the driver is told "The passenger cancelled this request" | `cancel.e2e-spec.ts` |
+| Two drivers are told about the same busy route | Nothing to settle: suggestions are advice only, and the driver chooses (D-009). Automatic assignment would make every car herd to one route | — |
+
+**Why not other designs:**
+- **WebSockets:** two-way traffic is not needed. SSE is plain HTTP through the same `/api` proxy and cookie, and the browser reconnects by itself.
+- **Data in the events:** it would need per-user filtering on the server, and it is easy to leak another passenger's details. Hints and a refetch reuse the checks that already exist.
+- **Faster polling (1 s):** three times the requests on the free tier, and still up to a second late.
+
+**At larger scale:**
+- **Many API instances:** an in-process event bus is not enough, because a change on one instance must reach streams held by the others. The same `RealtimeService` interface would be backed by PostgreSQL `LISTEN/NOTIFY` (a few instances) or a Redis or NATS channel (many).
+- **Per-user topics:** hints could name a vehicle or a ride, so that only affected screens refetch instead of every connected one.
+- **Sequential offers:** many drivers racing for one request wastes taps. An `offers` table would hold one row per (request, driver) with an expiry, offered to the nearest driver first, then widened. The same compare-and-set would stay as the final guard.
+- **Idempotency keys** on accept, so a retried tap after a network timeout gets its original answer.
+
+**Tests:**
+- Unit, `realtime.service.spec.ts` (2): topics by role; every subscriber gets every change, in order.
+- `test/live-dispatch.e2e-spec.ts` (6):
+  - only takeable requests are listed
+  - race: two drivers accept the same request (5 rounds)
+  - a taken request leaves the other driver's list
+  - a driver's stream hears a new request the moment it is saved (a real HTTP stream)
+  - a passenger's stream hears only `rides`, and reads never publish
+  - the stream needs a session
+- Six earlier tests now check the refusal on accept instead of a reason in the list.
