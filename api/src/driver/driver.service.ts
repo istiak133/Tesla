@@ -207,7 +207,11 @@ export class DriverService {
     });
   }
 
-  /** Waiting requests, oldest first, marked with whether this driver can take them now. */
+  /**
+   * The waiting requests this driver can take right now, best first (D-014, D-020).
+   * Every waiting request reaches every driver whose car can take it; the first to accept
+   * gets it, and it drops out of the others' lists at once (live updates).
+   */
   async listWaitingRequests(driverId: string): Promise<WaitingRequestView[]> {
     const vehicle = await this.getVehicle(driverId);
     const pool = await this.ridesRepository.findActivePoolDetails(vehicle.id);
@@ -259,8 +263,11 @@ export class DriverService {
         reason,
       };
     });
-    // Takeable and near first, with aged requests lifted to the top (D-014).
-    return orderWaitingList(listed, new Date());
+    // Only what this car can take; aged requests first, then the nearest pickup (D-014).
+    return orderWaitingList(
+      listed.filter((request) => request.canAccept),
+      new Date(),
+    );
   }
 
   /**
@@ -292,7 +299,7 @@ export class DriverService {
           'ALREADY_TAKEN',
           ride.status === RideStatus.CANCELLED
             ? 'The passenger cancelled this request'
-            : 'This request is no longer waiting',
+            : 'Another driver took this request',
         );
       }
 
