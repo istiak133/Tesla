@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
 import { DriverController } from '../driver/driver.controller.js';
 import { DriverService } from '../driver/driver.service.js';
+import { TripService } from '../driver/trip.service.js';
 import { GeographyModule } from '../geography/geography.module.js';
 import { PoolingService } from './pooling.service.js';
 import { RidesController } from './rides.controller.js';
@@ -11,6 +12,12 @@ import { RidesService } from './rides.service.js';
 @Module({
   imports: [AuthModule, GeographyModule],
   controllers: [RidesController, DriverController],
-  providers: [RidesRepository, PoolingService, RidesService, DriverService],
+  providers: [
+    RidesRepository,
+    PoolingService,
+    RidesService,
+    DriverService,
+    TripService,
+  ],
 })
 export class RidesModule {}

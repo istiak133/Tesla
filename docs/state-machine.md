@@ -1,75 +1,52 @@
 # State Machines
 
-Any transition not listed here is rejected with `InvalidTransition`. Every transition writes an event row
-(`pool_events` or `ride_request_events`) in the same transaction.
+One status set is shared by pools and ride requests (docs/assumptions.md §5). Driver actions change the
+pool and every active passenger in it in the same transaction, under the vehicle lock.
+Any transition not listed here is rejected with **409 `INVALID_TRANSITION`**. Every change writes a
+`ride_events` row (actor, reason, time).
+
+## Ride request
+
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED: passenger requests (solo estimate)
+    REQUESTED --> MATCHED: auto-joins an open pool / driver accepts
+    MATCHED --> DRIVER_ARRIVED: driver arrives
+    DRIVER_ARRIVED --> STARTED: driver starts (fares locked)
+    STARTED --> COMPLETED: driver completes
+    REQUESTED --> CANCELLED: passenger cancels
+    MATCHED --> CANCELLED: passenger cancels
+    DRIVER_ARRIVED --> CANCELLED: passenger cancels
+    MATCHED --> REQUESTED: driver cancels the trip
+    DRIVER_ARRIVED --> REQUESTED: driver cancels the trip
+    COMPLETED --> [*]
+    CANCELLED --> [*]
+```
+
+| From | To | Actor | Precondition |
+|---|---|---|---|
+| REQUESTED | MATCHED | System / driver | Passes M1–M4 (same pickup, pool open, seats free, detour ≤ 2 km) |
+| MATCHED | DRIVER_ARRIVED | Driver | Own vehicle's pool |
+| DRIVER_ARRIVED | STARTED | Driver | ≥ 1 passenger; final fares locked (−20% if 2+ passengers) |
+| STARTED | COMPLETED | Driver | — |
+| REQUESTED, MATCHED, DRIVER_ARRIVED | CANCELLED | Passenger | Own ride (else 403); seats freed at once |
+| MATCHED, DRIVER_ARRIVED | REQUESTED | Driver | Trip not started; passengers wait for another driver |
 
 ## Pool
 
 ```mermaid
 stateDiagram-v2
-    [*] --> ACCEPTED: driver accepts first request
-    ACCEPTED --> DRIVER_ARRIVED: driver at first pickup stop
-    DRIVER_ARRIVED --> STARTED: driver starts
-    STARTED --> STARTED: next stop / pickup / drop-off
-    STARTED --> COMPLETED: last passenger dropped off (automatic)
-    ACCEPTED --> CANCELLED: driver cancels, or empty (automatic)
-    DRIVER_ARRIVED --> CANCELLED: driver cancels, or empty (automatic)
-    COMPLETED --> [*]
-    CANCELLED --> [*]
+    [*] --> MATCHED: first request accepted
+    MATCHED --> DRIVER_ARRIVED
+    DRIVER_ARRIVED --> STARTED
+    STARTED --> COMPLETED
+    MATCHED --> CANCELLED: driver cancels, or last passenger cancels
+    DRIVER_ARRIVED --> CANCELLED: driver cancels, or last passenger cancels
 ```
 
-| State | Joins allowed? |
-|---|---|
-| ACCEPTED, DRIVER_ARRIVED | Yes, if shared, on the same route and direction, seats free |
-| STARTED | Only for pickups ahead of `current_stop_index`, if shared and seats free |
-| COMPLETED, CANCELLED | No |
-
-**Start requires:** at least one passenger IN_PROGRESS and no MATCHED passenger still waiting at the
-current stop. Unconfirmed holds are released on start.
-
-## Ride request (passenger)
-
-```mermaid
-stateDiagram-v2
-    [*] --> REQUESTED: passenger requests (fare locked)
-    REQUESTED --> HELD: fits a shared pool (planned)
-    REQUESTED --> MATCHED: driver accepts
-    REQUESTED --> CANCELLED: passenger cancels
-    REQUESTED --> EXPIRED: 5 minutes, nobody accepted (planned)
-    HELD --> MATCHED: driver confirms
-    HELD --> REQUESTED: rejected / hold timeout / start / pool cancelled
-    HELD --> CANCELLED: passenger cancels
-    MATCHED --> IN_PROGRESS: picked up
-    MATCHED --> NO_SHOW: absent at pickup (planned)
-    MATCHED --> CANCELLED: passenger cancels before pickup
-    MATCHED --> REQUESTED: driver cancels pool before start
-    IN_PROGRESS --> COMPLETED: dropped off
-    COMPLETED --> [*]
-    CANCELLED --> [*]
-    EXPIRED --> [*]
-    NO_SHOW --> [*]
-```
-
-Passenger-facing labels: **waiting** (REQUESTED, HELD) · **matched** (MATCHED) · **in progress**
-(IN_PROGRESS) · **completed** · **cancelled** · **expired** · **no-show**.
-
-A request returned to REQUESTED gets a fresh expiry time. Its locked fare does not change.
-
-## Pool membership
-
-```mermaid
-stateDiagram-v2
-    [*] --> HELD: system hold (planned)
-    [*] --> ACTIVE: driver accepts directly
-    HELD --> ACTIVE: driver confirms
-    HELD --> REJECTED: driver rejects
-    HELD --> RELEASED: timeout, start, or pool cancelled
-    ACTIVE --> ENDED: completed / cancelled / no-show / pool cancelled
-```
-
-Seats count toward `pools.seats_taken` while a membership is HELD or ACTIVE.
+Only a `MATCHED` pool accepts new passengers. Once the driver arrives, the group is fixed.
 
 ## Driver availability
 
-`vehicles.is_online`: OFFLINE ⇄ ONLINE. Going offline is rejected while the vehicle has an active pool.
-Changes take the vehicle lock.
+`vehicles.is_online`. Going offline is refused while the vehicle has an active pool; accepting is
+refused while offline. Both use the vehicle lock.

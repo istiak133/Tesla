@@ -59,14 +59,14 @@ Details and reasoning for each entry are further down in this file.
 | Matching rule | Same route and direction, pickup ahead of the vehicle | M1–M4: same pickup zone, pool open, seats free, every member's detour ≤ 2 km (drop-offs nearest first) | Implemented (`PoolingService.assertCanJoin`) |
 | Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the oldest compatible open pool (best effort: under contention the ride keeps waiting); the driver can also accept compatible waiting requests | Implemented |
 | Joins after start | Allowed from stops ahead (option C) | Not in the MVP: a pool is closed once STARTED | Deferred |
-| Status model | Separate pool and per-passenger states (IN_PROGRESS, per-passenger drop-off) | One shared set: REQUESTED → MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED, + CANCELLED; driver actions apply to the whole pool | Planned |
-| Fare | ৳30 + ৳20 per hop, passenger picks SHARED (−20%) or SOLO, locked at request | (৳30 + km × ৳15) × seats; −20% if the pool has 2+ passengers at STARTED; estimate = solo price (never exceeded); locked at STARTED | In progress (fare rules and detour rules implemented as tested pure functions; applied at STARTED with pooling) |
+| Status model | Separate pool and per-passenger states (IN_PROGRESS, per-passenger drop-off) | One shared set: REQUESTED → MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED, + CANCELLED; driver actions apply to the whole pool | Implemented (`TripService`, docs/state-machine.md) |
+| Fare | ৳30 + ৳20 per hop, passenger picks SHARED (−20%) or SOLO, locked at request | (৳30 + km × ৳15) × seats; −20% if the pool has 2+ passengers at STARTED; estimate = solo price (never exceeded); locked at STARTED | Implemented (locked at STARTED by `TripService`; tested ৳60 / ৳72 pooled, ৳75 alone) |
 | Ride types | SHARED / SOLO chosen by the passenger | No ride type; every ride can be pooled | Implemented |
 | Money storage | Integer paisa | Integer paisa (unchanged) | Implemented |
 | Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status. Rule added: inside the lock only the transaction's connection is used (found by the race test) | Implemented (tested: 8 riders racing for the last seat, 10/10 runs) |
 | Idempotency key (double tap) | E6 + G11 | Kept as a design, not built for the MVP | Deferred |
 | Seat hold, request expiry, no-show | E1, Y, E7 | Kept as designs, not built for the MVP | Deferred |
-| Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger before STARTED; empty pool auto-cancels; driver before start → riders back to REQUESTED | Passenger part implemented; driver cancel planned |
+| Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger before STARTED; empty pool auto-cancels; driver before start → riders back to REQUESTED | Implemented |
 | Payment | Cash only | Cash only (unchanged) | Planned |
 | Hosting | Vercel + Render/Koyeb + Neon | Unchanged (re-check free tiers at deploy time) | Planned |
 

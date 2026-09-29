@@ -34,7 +34,9 @@ explain afterwards exactly what happened.
 - Drivers go online, see waiting requests (with the reason if they cannot take one) and accept them
 - Seat capacity protected against concurrent requests (vehicle row lock + database CHECK), tested with eight riders racing for the last seat
 - Passenger cancellation before the trip starts; an empty pool closes itself; full status history per ride
-- Trip progress (arrive, start with fares locked, complete) and the web screens *(coming)*
+- Trip lifecycle driven by the driver: arrive → start (final fares locked, 20% pool discount if 2+ passengers) → complete, or cancel before the start (passengers go back to waiting)
+- Invalid transitions rejected with 409; every change recorded in the ride history
+- Web screens *(coming)*
 
 ## Screenshots
 
@@ -187,6 +189,8 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | GET | `/driver/requests` | Driver: waiting requests with `canAccept` and a reason |
 | POST | `/driver/requests/:id/accept` | Driver: accept (creates the pool or adds to the open one) |
 | GET | `/driver/pool` | Driver: vehicle and current trip with its passengers |
+| POST | `/driver/pool/arrive`, `/start`, `/complete` | Driver: move the trip forward (409 out of order); start locks the fares |
+| POST | `/driver/pool/cancel` | Driver: cancel before the start; passengers return to waiting |
 
 Business errors return `{ statusCode, code, message }`, e.g. `409 SEATS_UNAVAILABLE`, `403 NOT_YOUR_RIDE`.
 
