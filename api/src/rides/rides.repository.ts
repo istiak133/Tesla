@@ -193,6 +193,8 @@ export class RidesRepository {
             },
           },
         },
+        // Late-cancel fees this trip's driver earned (D-018).
+        cancellationFees: { include: { passenger: true } },
       },
     });
   }
@@ -242,6 +244,38 @@ export class RidesRepository {
         },
       });
       return ride;
+    });
+  }
+
+  /**
+   * Waiting rides with a pickup in one of these zones, locked for this transaction.
+   * SKIP LOCKED passes over rides another transaction is taking right now (a driver's
+   * accept, another car filling a seat, the passenger's own cancel), so filling a freed
+   * seat never waits on a ride and two cars can never deadlock over the same riders.
+   */
+  async lockWaitingRides(tx: Tx, pickupZoneIds: string[]) {
+    if (pickupZoneIds.length === 0) {
+      return [];
+    }
+    const rows = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM ride_requests
+      WHERE status = 'REQUESTED' AND pickup_zone_id = ANY(${pickupZoneIds}::uuid[])
+      ORDER BY created_at
+      FOR UPDATE SKIP LOCKED`;
+    return tx.rideRequest.findMany({
+      where: { id: { in: rows.map((row) => row.id) } },
+    });
+  }
+
+  /** Late-cancel fees this passenger still owes (D-018), oldest first. */
+  async findUnpaidFees(passengerId: string, tx: Tx = this.prisma) {
+    return tx.rideRequest.findMany({
+      where: {
+        passengerId,
+        cancellationFeePaisa: { gt: 0 },
+        feePaidWithRideId: null,
+      },
+      orderBy: { createdAt: 'asc' },
     });
   }
 

@@ -114,6 +114,8 @@ export function CurrentTrip({ state }: { state: DriverState }) {
                   <span>
                     <span className="font-medium">{p.name}</span> gets off ·{" "}
                     {taka(p.estimatedFarePaisa)} or less
+                    {p.duesPaisa > 0 &&
+                      ` + ${taka(p.duesPaisa)} earlier cancel fee`}
                   </span>
                   <Button
                     loading={busy({ kind: "dropoff", rideId: p.rideId })}
@@ -184,6 +186,11 @@ export function CurrentTrip({ state }: { state: DriverState }) {
                 <p className="text-xs text-stone-500">
                   {p.finalFarePaisa === null ? "estimate" : "cash, paid"}
                 </p>
+                {p.duesPaisa > 0 && (
+                  <p className="text-xs font-medium text-amber-800">
+                    + {taka(p.duesPaisa)} to collect
+                  </p>
+                )}
               </div>
             </li>
           ))}

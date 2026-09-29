@@ -187,35 +187,47 @@ model Pool {
   driverEarningsPaisa Int?       @map("driver_earnings_paisa") // ৳10/km carried + ৳20/pickup
   platformFeePaisa    Int?       @map("platform_fee_paisa") // collected − driver earnings
 
-  vehicle Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  route   Route        @relation(fields: [routeId], references: [id])
-  members PoolMember[]
-  events  RideEvent[]
+  vehicle          Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  route            Route         @relation(fields: [routeId], references: [id])
+  members          PoolMember[]
+  cancellationFees RideRequest[] @relation("CancellationFees")
+  events           RideEvent[]
 
   @@index([status, routeId])
   @@map("pools")
 }
 
 model RideRequest {
-  id                 String     @id @default(uuid()) @db.Uuid
-  passengerId        String     @map("passenger_id") @db.Uuid
-  pickupZoneId       String     @map("pickup_zone_id") @db.Uuid
-  dropoffZoneId      String     @map("dropoff_zone_id") @db.Uuid
-  seats              Int
-  status             RideStatus @default(REQUESTED)
+  id                    String     @id @default(uuid()) @db.Uuid
+  passengerId           String     @map("passenger_id") @db.Uuid
+  pickupZoneId          String     @map("pickup_zone_id") @db.Uuid
+  dropoffZoneId         String     @map("dropoff_zone_id") @db.Uuid
+  seats                 Int
+  status                RideStatus @default(REQUESTED)
   // Direct distance and the solo fare, fixed when the ride is requested.
-  distanceKm         Int        @map("distance_km")
-  estimatedFarePaisa Int        @map("estimated_fare_paisa")
-  // Set when the trip starts (pool discount decided then).
-  finalFarePaisa     Int?       @map("final_fare_paisa")
-  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  distanceKm            Int        @map("distance_km")
+  estimatedFarePaisa    Int        @map("estimated_fare_paisa")
+  // Locked at drop-off: the solo fare, or 20% less if the passenger shared a hop.
+  finalFarePaisa        Int?       @map("final_fare_paisa")
+  // Late cancel or no-show fee (D-018): owed by this passenger, earned by this ride's driver.
+  cancellationFeePaisa  Int        @default(0) @map("cancellation_fee_paisa")
+  // The trip it was cancelled from: that trip's driver earns the fee.
+  cancellationFeePoolId String?    @map("cancellation_fee_pool_id") @db.Uuid
+  // The later ride on which that fee was paid in cash; null while it is still owed.
+  feePaidWithRideId     String?    @map("fee_paid_with_ride_id") @db.Uuid
+  // Earlier fees this ride's driver collected in cash at drop-off, on top of the fare.
+  duesCollectedPaisa    Int        @default(0) @map("dues_collected_paisa")
+  createdAt             DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  passenger   User         @relation(fields: [passengerId], references: [id], onDelete: Cascade)
-  pickupZone  Zone         @relation("RidePickup", fields: [pickupZoneId], references: [id])
-  dropoffZone Zone         @relation("RideDropoff", fields: [dropoffZoneId], references: [id])
-  memberships PoolMember[]
-  events      RideEvent[]
+  passenger           User          @relation(fields: [passengerId], references: [id], onDelete: Cascade)
+  pickupZone          Zone          @relation("RidePickup", fields: [pickupZoneId], references: [id])
+  dropoffZone         Zone          @relation("RideDropoff", fields: [dropoffZoneId], references: [id])
+  memberships         PoolMember[]
+  events              RideEvent[]
+  feePaidWithRide     RideRequest?  @relation("FeePaidWith", fields: [feePaidWithRideId], references: [id])
+  cancellationFeePool Pool?         @relation("CancellationFees", fields: [cancellationFeePoolId], references: [id])
+  feesSettled         RideRequest[] @relation("FeePaidWith")
 
   @@index([status, createdAt])
   @@index([passengerId, createdAt])

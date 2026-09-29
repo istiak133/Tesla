@@ -165,6 +165,7 @@ flowchart TD
 - **Where the car is:** on a trip, the pool's current stop; between trips, the stop of `vehicles.current_zone` on the chosen route. **Approach km** is the route distance from that stop to the pickup, only for pickups at or ahead of the car.
 - **Automatic join:** a new request joins the **nearest** active pool that passes R1 – R4 (fewest approach km; on a tie, the older trip). A car that does not fit under its lock (full, passed) is skipped for the next nearest; if a vehicle is busy (lock wait over 3 s), or none fits, the request keeps waiting. Only cars already on a trip are considered.
 - **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool can accept only requests that pass R1 – R4.
+- **A freed seat is filled at once:** after a cancel, a no-show or a drop-off, the same transaction seats waiting riders who fit, in the waiting-list order below (decision D-017). No driver tap, no seat hold.
 - **Waiting list order:** takeable requests waiting 5 minutes or more first (oldest first, so no one waits for ever), then the other takeable ones by nearest pickup, then the ones the driver cannot take, each with its reason. Every item shows how far ahead its pickup is.
 
 ### 4.5 Constraints
@@ -183,7 +184,9 @@ The system suggests a route and the driver decides (`api/src/pooling/route-sugge
 |---|---|
 | Where the car is | `vehicles.current_zone`: set by the driver before the first trip, then updated automatically at every **Arrive**. It cannot be set by hand during a trip. |
 | Demand per route | Waiting requests the route could still serve from the car's zone: the route passes their pickup, then their destination, and the pickup is at or after the car. |
-| Ranking | Routes through the car's zone first, then most riders waiting, then route code. |
+| Listed | Only the routes through the car's zone (a trip starts where the car is, D-014); none until the location is set. Each shows how many riders wait ahead of the car on it (decision D-019). |
+| Moving off the route | Setting a location the chosen route does not pass clears the route and sets the driver offline until they pick a listed one. |
+| Ranking | Most riders waiting, then route code. |
 | Suggestion | The best route through the car's zone, shown as **Suggested** with one tap to take it. No suggestion while the location is unknown. |
 
 Example: Jashim at Banani; Nusrat Banani → Dhanmondi and Rafiq Mohakhali → Farmgate wait on Banani → Dhanmondi, Shirin Banani → Gulshan 1 on Uttara → Bashundhara, so Banani → Dhanmondi is suggested (2 waiting). At scale this becomes automatic dispatch from GPS and demand; it is kept as advice here because there is no live location and the driver must agree to a route.
@@ -259,7 +262,8 @@ Every passenger status change is recorded in `ride_events` with the ride, the po
 | **Empty pool** | If nobody is left, the pool closes and the driver becomes free. |
 | **Twice** | Cancelling a ride that is already cancelled returns it as it is (a double tap or a retry is not an error). After pickup: `409` "A ride cannot be cancelled after pickup"; after drop-off: `409` "This ride is already finished". |
 | **At the same moment as the driver** | Accept, pickup, no-show and trip cancel all run under the same vehicle lock, so exactly one wins and the other is told why (e.g. the driver sees "The passenger cancelled this request"). Decision D-016. |
-| **Fee** | None in the MVP: cash cannot be collected from someone who never rode. Planned with the wallet: a fee once the car has arrived, paid to the driver. |
+| **Fee** | **৳20** once the car is coming straight to the passenger's stop (the driver has left for it) or is standing there, unless the seat was taken less than 2 minutes ago. A no-show costs the same. Free while waiting or while the car is a stop or more away. The driver who came earns all of it (decision D-018). |
+| **Paying the fee** | Cash only, so it is paid with the passenger's next ride: shown on that ride ("+ ৳20 from an earlier late cancel"), collected by that driver at drop-off and handed to the platform, which pays the first driver. |
 
 ### 6.2 Effect on Other Passengers' Fares
 
@@ -298,7 +302,7 @@ passengerFare = subtotal − poolDiscount
 | **Sharing rule** | Two passengers share if their stretches overlap on at least one hop: `a.pickup < b.dropoff` and `b.pickup < a.dropoff`. Getting on at the stop where someone else gets off is not sharing. Cancelled riders and no-shows never count. |
 | **Estimate** | Shown at request time using the solo fare, the maximum the passenger can pay. |
 | **Final fare** | Calculated and locked when the passenger is **dropped off**, when it is known who they rode with. |
-| **Payment** | Cash only: the passenger pays the final fare to the driver at drop-off. A simulated TeslaPay wallet is a future improvement. |
+| **Payment** | Cash only: the passenger pays the final fare to the driver at drop-off, plus any ৳20 late-cancel fee still owed from an earlier ride (§6.1). A simulated TeslaPay wallet is a future improvement. |
 
 **Worked examples**
 
@@ -394,3 +398,5 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
 | A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |
 | A-22 | Both account types sign up on their own; drivers give an NID or passport, a licence and their car; no OTP or document check yet. | [8](#8-users-vehicles--access) |
+| A-23 | A seat freed by a cancel, a no-show or a drop-off goes straight to a waiting rider who fits. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-24 | A late cancel or a no-show costs ৳20 (after a 2-minute grace), paid in cash with the next ride, earned by the driver who came. | [6.1](#61-passenger-cancellation) |

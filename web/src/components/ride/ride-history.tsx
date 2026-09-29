@@ -37,7 +37,7 @@ export function RideHistory() {
                 </p>
               </div>
               <div className="flex items-center gap-3">
-                <span className="font-medium">{taka(ride.farePaisa)}</span>
+                <span className="text-right font-medium">{paidText(ride)}</span>
                 <StatusBadge status={ride.status} />
               </div>
             </li>
@@ -46,4 +46,16 @@ export function RideHistory() {
       )}
     </Card>
   );
+}
+
+/** What this ride cost: the fare, a late-cancel fee, or nothing (D-018). */
+function paidText(ride: RideSummary): string {
+  if (ride.status === "CANCELLED") {
+    return ride.cancellationFeePaisa > 0
+      ? `${taka(ride.cancellationFeePaisa)} late-cancel fee`
+      : "No charge";
+  }
+  return ride.duesCollectedPaisa > 0
+    ? `${taka(ride.farePaisa)} + ${taka(ride.duesCollectedPaisa)} fee`
+    : taka(ride.farePaisa);
 }

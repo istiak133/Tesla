@@ -62,9 +62,23 @@ export function RoutePicker({ state }: { state: DriverState }) {
   const suggested = ranked.find(
     (route) => route.routeId === suggestions.data?.suggestedRouteId,
   );
-  const waitingOn = (routeId: string) =>
-    ranked.find((route) => route.routeId === routeId)?.waitingAhead;
   const shown = routes.data?.find((route) => route.id === shownId);
+  const hasLocation = state.vehicle.currentZone !== null;
+  // Only routes that pass the car can be chosen (a trip starts where the car is), so only
+  // those are listed, best first, each with the riders waiting ahead of the car.
+  // During a trip the route is fixed and only it is shown.
+  const options: { id: string; label: string }[] = locked
+    ? state.vehicle.route
+      ? [{ id: state.vehicle.route.id, label: state.vehicle.route.name }]
+      : []
+    : ranked.map((route) => ({
+        id: route.routeId,
+        label: `${route.name} · ${
+          route.waitingAhead === 0
+            ? "nobody waiting"
+            : `${route.waitingAhead} waiting`
+        }${route.routeId === suggested?.routeId ? " · suggested" : ""}`,
+      }));
 
   return (
     <div className="space-y-4 rounded-2xl border border-stone-200 bg-paper px-5 py-4 shadow-sm">
@@ -95,24 +109,19 @@ export function RoutePicker({ state }: { state: DriverState }) {
             Route
           </span>
           <select
-            className={`${inputClass} w-72`}
+            className={`${inputClass} w-80`}
             value={shownId}
-            disabled={locked || routes.isPending}
+            disabled={locked || !hasLocation || suggestions.isPending}
             onChange={(event) => setPicked(event.target.value)}
           >
             <option value="" disabled>
-              Choose a route
+              {hasLocation ? "Choose a route" : "Set your location first"}
             </option>
-            {routes.data?.map((route) => {
-              const waiting = waitingOn(route.id);
-              return (
-                <option key={route.id} value={route.id}>
-                  {route.name}
-                  {waiting !== undefined ? ` · ${waiting} waiting` : ""}
-                  {route.id === suggested?.routeId ? " · suggested" : ""}
-                </option>
-              );
-            })}
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </label>
         {!locked && picked !== "" && picked !== current && (

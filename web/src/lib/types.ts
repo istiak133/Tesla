@@ -33,6 +33,11 @@ export type Ride = {
   distanceKm: number;
   estimatedFarePaisa: number;
   finalFarePaisa: number | null;
+  // Late-cancel fees (D-018): charged on this ride, what a cancel costs now, and earlier
+  // fees paid (or to be paid) with this ride.
+  cancellationFeePaisa: number;
+  cancelNowFeePaisa: number;
+  duesPaisa: number;
   createdAt: string;
   driver: { name: string; vehicleName: string } | null;
   route: {
@@ -54,6 +59,8 @@ export type RideSummary = {
   dropoff: string;
   seats: number;
   farePaisa: number;
+  cancellationFeePaisa: number;
+  duesCollectedPaisa: number;
   createdAt: string;
 };
 
@@ -82,6 +89,7 @@ export type TripPassenger = {
   dropoffStop: number;
   estimatedFarePaisa: number;
   finalFarePaisa: number | null;
+  duesPaisa: number; // earlier late-cancel fees, collected with this fare
 };
 
 export type DriverState = {
@@ -115,12 +123,16 @@ export type PastTrip = {
   collectedPaisa: number | null;
   driverEarningsPaisa: number | null;
   platformFeePaisa: number | null;
+  cancellationFeesPaisa: number; // late-cancel fees earned on this trip (paid by the platform)
+  lateCancels: string[]; // first names of riders who cancelled late or did not show
+  duesCollectedPaisa: number; // earlier riders' fees collected here, owed to the platform
   passengers: {
     name: string;
     pickup: string;
     dropoff: string;
     seats: number;
     finalFarePaisa: number | null;
+    duesCollectedPaisa: number;
   }[];
 };
 

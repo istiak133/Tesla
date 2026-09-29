@@ -320,7 +320,7 @@ describe('Ride requests and pooling (e2e)', () => {
     }
   });
 
-  it('a seat freed at a drop-off can be taken further along the route', async () => {
+  it('a seat freed at a drop-off goes straight to a rider waiting there (D-017)', async () => {
     const jashim = await jashimOnline();
     const nusrat = await loginAs(app, 'nusrat@teslapool.test');
     const rafiq = await loginAs(app, 'rafiq@teslapool.test');
@@ -357,17 +357,11 @@ describe('Ride requests and pooling (e2e)', () => {
     const dropped = await jashim.post(
       `/driver/pool/passengers/${nusratRide.body.id}/dropoff`,
     );
-    expect(dropped.body.pool.seatsTaken).toBe(1);
-
-    // Now Jashim can take Shirin, who is standing right there.
-    const list = await jashim.get('/driver/requests');
-    expect(list.body[0]).toMatchObject({ canAccept: true });
-    const accepted = await jashim.post(
-      `/driver/requests/${shirinRide.body.id}/accept`,
-    );
-    expect(accepted.status).toBe(200);
+    // Two seats came free; Shirin, standing right there, got one without anyone accepting.
+    expect(dropped.body.pool.seatsTaken).toBe(2);
     const shirinNow = await shirin.get('/rides/current');
     expect(shirinNow.body.ride.status).toBe('DRIVER_ARRIVED');
+    expect(shirinNow.body.ride.coRiders).toEqual(['Rafiq']);
   });
 
   it('a driver must choose a route before going online, and keeps it during a trip', async () => {

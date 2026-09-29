@@ -1,11 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { cancellationFeePaisa } from '../fares/cancellation.js';
 import { tripEarnings } from '../fares/earnings.js';
 import {
   GeographyRepository,
   type DistanceLookup,
 } from '../geography/geography.repository.js';
 import { Pool, RideRequest, RideStatus } from '../generated/prisma/client.js';
-import { rankJoinCandidates } from '../pooling/matching.js';
+import {
+  approachKm,
+  orderWaitingList,
+  rankJoinCandidates,
+} from '../pooling/matching.js';
 import { joinProblem, tripStops } from '../pooling/route-plan.js';
 import { RideError } from './ride.errors.js';
 import {
@@ -24,6 +29,8 @@ import {
  */
 @Injectable()
 export class PoolingService {
+  private readonly logger = new Logger(PoolingService.name);
+
   constructor(
     private readonly ridesRepository: RidesRepository,
     private readonly geographyRepository: GeographyRepository,
@@ -207,9 +214,23 @@ export class PoolingService {
       throw new RideError('INVALID_TRANSITION', 'This ride holds no seat');
     }
 
+    // Late cancel or no-show: Tk 20 once the car is coming straight to this stop or is
+    // there (D-018). Paid in cash with the passenger's next ride; this trip's driver earns it.
+    const pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
+    const fee = cancellationFeePaisa({
+      carStop: pool.currentStop,
+      pickupStop: membership.pickupStop,
+      joinedAt: membership.joinedAt,
+      now: new Date(),
+    });
+
     await tx.rideRequest.update({
       where: { id: ride.id },
-      data: { status: RideStatus.CANCELLED },
+      data: {
+        status: RideStatus.CANCELLED,
+        cancellationFeePaisa: fee,
+        cancellationFeePoolId: fee > 0 ? poolId : null,
+      },
     });
     await tx.poolMember.update({
       where: { id: membership.id },
@@ -226,11 +247,94 @@ export class PoolingService {
         fromStatus: ride.status,
         toStatus: RideStatus.CANCELLED,
         actorUserId,
-        reason,
+        reason:
+          fee > 0
+            ? `${reason}; Tk ${fee / 100} fee, paid with the next ride`
+            : reason,
       },
     });
 
+    await this.fillFreedSeats(tx, poolId);
     await this.closeIfEmpty(tx, poolId);
+  }
+
+  /**
+   * A seat was just freed in this trip (a cancel, a no-show or a drop-off): give it at once
+   * to riders who are waiting and fit (D-017), best first, in the same transaction and
+   * under the same vehicle lock. The order is the driver's list order: riders waiting
+   * 5+ minutes first, then the nearest pickups.
+   *
+   * Best effort, like auto-join: it runs inside a savepoint, so if anything goes wrong
+   * the cancel or drop-off that freed the seat still succeeds and the riders keep waiting.
+   */
+  async fillFreedSeats(tx: Tx, poolId: string): Promise<void> {
+    await tx.$executeRawUnsafe('SAVEPOINT fill_freed_seats');
+    try {
+      await this.seatWaitingRiders(tx, poolId);
+      await tx.$executeRawUnsafe('RELEASE SAVEPOINT fill_freed_seats');
+    } catch (error) {
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT fill_freed_seats');
+      this.logger.warn(
+        { poolId, error: error instanceof Error ? error.message : error },
+        'could not fill a freed seat; the riders keep waiting',
+      );
+    }
+  }
+
+  private async seatWaitingRiders(tx: Tx, poolId: string): Promise<void> {
+    let pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
+    const vehicle = await tx.vehicle.findUniqueOrThrow({
+      where: { id: pool.vehicleId },
+    });
+    if (
+      !ACTIVE_POOL_STATUSES.includes(pool.status) ||
+      !vehicle.isOnline ||
+      pool.seatsTaken >= pool.seatCapacity
+    ) {
+      return;
+    }
+
+    // Riders waiting at this stop or further along the route: the car never goes back.
+    const stops = await this.ridesRepository.findRouteStops(tx, pool.routeId);
+    const ahead = stops.filter((stop) => stop.position >= pool.currentStop);
+    const waiting = await this.ridesRepository.lockWaitingRides(
+      tx,
+      ahead.map((stop) => stop.zoneId),
+    );
+
+    const listed = waiting.map((ride) => {
+      const positions = tripStops(stops, ride);
+      return {
+        ride,
+        canAccept: joinProblem(pool, stops, ride) === null,
+        pickupKmAhead:
+          positions === null
+            ? null
+            : approachKm(stops, pool.currentStop, positions.pickupStop),
+        requestedAt: ride.createdAt,
+      };
+    });
+
+    for (const candidate of orderWaitingList(listed, new Date())) {
+      if (!candidate.canAccept) {
+        break; // the list puts every rider who fits first
+      }
+      // Seats change with every rider seated, so check this one against the pool as it is now.
+      if (joinProblem(pool, stops, candidate.ride) !== null) {
+        continue;
+      }
+      await this.joinUnderLock(
+        tx,
+        pool,
+        candidate.ride,
+        null,
+        'A seat came free in a Tesla on the way: joined automatically',
+      );
+      pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
+      if (pool.seatsTaken >= pool.seatCapacity) {
+        return;
+      }
+    }
   }
 
   /**
