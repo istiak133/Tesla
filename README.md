@@ -382,19 +382,59 @@ On the web, every error is shown next to the action that caused it, and a `401` 
 
 ## Fare model
 
-`(৳30 + direct km × ৳15) × seats`, minus **20%** if another passenger rode with you on at least one hop. The fare is locked when you are dropped off. The estimate shown at request time is the solo fare, so nobody pays more than they saw, and nobody pays for the route's detour. Money is stored in integer paisa.
+### 🚘 Sharing is automatic
+- 🔁 Every ride can be shared: there is no "solo" option to choose.
+- ⚡ On request, the system puts the passenger into the **oldest** trip that fits (right route, stop not passed, seats free).
+- ⏳ If nothing fits, the request waits and drivers see it with the reason.
 
-| Passenger | Trip | km | Estimate (solo) | Final (shared a hop) |
+### 🧮 The three formulas
+| Who | Formula |
+|---|---|
+| 🧑 **Passenger pays** | `(৳30 + direct km × ৳15) × seats`, then **× 0.8** if they shared at least one hop |
+| 🚗 **Driver earns** | `km driven with a passenger on board × ৳10` **+** `pickups × ৳20` |
+| 🏢 **Platform keeps** | `all passengers' fares − driver earnings` |
+
+### 📏 Passenger fare rules
+- 📍 **Direct distance only:** the fare uses the straight zone-to-zone km, so nobody pays for the route's detour.
+- 🪑 **Per seat:** two seats cost twice as much.
+- 🤝 **Sharing = at least one hop together** with another rider who was really in the car. Cancelled riders and no-shows never count.
+- 🔄 **Handing over a seat is not sharing:** getting on at the stop where someone else gets off gives no discount to either.
+- 🧾 **The estimate is the maximum:** the price shown at request time is the solo fare. The final fare can only be the same or 20% lower.
+- 🔒 **Locked at drop-off:** that is when it is known who you rode with.
+- 💰 **Integer paisa:** money is never a floating-point number. Every subtotal is a multiple of ৳5, so 20% off is always whole taka.
+- 💵 **Cash:** paid to the driver at drop-off.
+
+### 🚗 Driver pay rules
+- 🛣️ **Paid for the work, not from the fares:** a sharing discount never comes out of the driver's pocket.
+- 📐 **Each hop counted once:** a hop with three passengers is still paid once.
+- 👥 **More riders, more pay:** every pickup adds ৳20.
+- 🚫 **A no-show is not a pickup,** so it is not paid.
+- 🔒 **Locked with the trip:** when the last passenger gets off, the trip stores what was collected, the driver's earnings and the platform fee. A database CHECK makes sure `collected = driver + platform`.
+
+### 🏢 Platform rules
+- 💼 **Keeps the difference:** the discount is paid for by the extra passengers in the car.
+- 🧾 **Cash rides:** the platform fee is what the driver owes the platform (recorded per trip, shown on the driver's screen).
+- 🛡️ **No loss on any trip:** routes only sell trips that add at most 2 km or 40% to the direct distance. A unit test runs every trip each route can sell, alone and in every group of up to three bookings (about 25,000 cases): the platform always keeps at least ৳10.
+
+### 📊 Worked examples (route Uttara → Bashundhara)
+| Passenger | Trip | km | Estimate (solo) | Final |
 |---|---|---:|---:|---:|
-| Nusrat | Banani → Mohakhali | 3 | ৳75 | ৳60 |
-| Rafiq | Banani → Gulshan 1 | 4 | ৳90 | ৳72 |
-| Shirin | Mohakhali → Bashundhara (joins on the way) | 7 | ৳135 | ৳108 |
+| Nusrat | Banani → Mohakhali | 3 | ৳75 | ৳60 (shared a hop) |
+| Rafiq | Banani → Gulshan 1 | 4 | ৳90 | ৳72 (shared a hop) |
+| Shirin | Mohakhali → Bashundhara, joins on the way | 7 | ৳135 | ৳108 (shared a hop) |
 
-Taking over a seat at the stop where someone else got off is not sharing: both pay their solo fare.
+| Trip | 🧑 Collected | 🚗 Driver | 🏢 Platform |
+|---|---:|---:|---:|
+| Nusrat alone (3 km carried, 1 pickup) | ৳75 | ৳50 | ৳25 |
+| Nusrat + Rafiq (6 km, 2 pickups) | ৳132 | ৳100 | ৳32 |
+| The story: Nusrat, Rafiq, Shirin (12 km, 3 pickups) | ৳240 | ৳180 | ৳60 |
 
-**Who gets the money.** The driver is paid for the work, not from the fares: **৳10 per km** with a passenger on board **+ ৳20 per pickup**. The platform keeps the rest. So a sharing discount never comes out of the driver's pocket: it is paid for by the extra passengers. For the story trip, ৳240 is collected, Jashim earns ৳180 and the platform keeps ৳60. Routes only sell trips that add at most 2 km or 40% to the direct distance, and a unit test checks every trip every route can sell, alone and in every group of up to three bookings (about 25,000 cases): the platform always keeps at least ৳10 and the driver is always paid, so nobody loses money.
+### ✅ Why all three come out ahead
+- 🧑 **Passengers** pay 20% less when they share, and never more than the estimate.
+- 🚗 **The driver** earns by the km and the pickup, so a fuller car always pays more. In the story trip: ৳180, 75% of the fares.
+- 🏢 **The platform** keeps the rest, never below ৳10 on any trip it sells. In the story trip: ৳60.
 
-### Routes and matching rules
+## Routes and matching rules
 
 Tesla Pool drives three fixed lines, each in both directions (six routes):
 
