@@ -322,6 +322,10 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 ```
 
 - 🤖 CI on every pull request: lint, type checks, unit tests, migrations, end-to-end tests against PostgreSQL, the web production build and the Docker image builds.
+- 🌐 After every deploy, a **live end-to-end check** runs against the public URL (browser path: Vercel → Render → Neon).
+  - It makes 63 checks of every feature, including 4 races over the real network: the last seat, two accepts, a cancel against a trip cancel, and leaving a stop against joining it.
+  - It takes about a minute, with at most two requests at once.
+  - It proves the deployed system behaves correctly. It is **not a load test**: how many users at once the free tier can hold has not been measured.
 - 🎯 What the tests prove (the PRD's must-haves and the risky cases):
 
 | Requirement | Test |
@@ -428,7 +432,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 - 🚪 **Access control:** a session guard on every private route, a role guard (passenger vs driver), and an ownership check in the service (`403 NOT_YOUR_RIDE`). Co-riders see only first names, never fares.
 - ✅ **Input:** a whitelisting `ValidationPipe` (a client cannot send its own role), UUID checks on every id in the URL, and database CHECKs as the last line. Sign-up values are normalised first; the phone, NID and passport formats are checked again by CHECK constraints.
 - 🪪 **One person, one account:** unique indexes on email, phone, (document type, number), licence and plate; a driver's user, documents and car are created in one transaction, so a refused sign-up leaves nothing behind.
-- 🚦 **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login, counted per real client: the first `X-Forwarded-For` address, which Vercel sets and overwrites. Counting proxy hops was not stable behind Vercel and Render (found by the live stress test, fixed in v1.0.1).
+- 🚦 **Headers and limits:** helmet's security headers; 5 attempts per minute on sign-up and login, counted per real client: the first `X-Forwarded-For` address, which Vercel sets and overwrites. Counting proxy hops was not stable behind Vercel and Render (found by the live end-to-end check, fixed in v1.0.1).
 - 🔒 **Secrets:** no real secrets in the repository, only `.env.example` files and the local-only Docker defaults in `docker-compose.yml`; the production database URL lives only in Render's settings. Logs redact cookies, authorization headers and `Set-Cookie`; the API refuses to start with invalid configuration.
 
 ## 💰 Fare model
@@ -615,6 +619,7 @@ flowchart LR
 - 🧪 **Demo helpers.** The login page has one-click demo accounts and the demo password is public; both are for the reviewer and must be turned off in a real deployment. Drivers sign up on their own: their documents are stored but not yet checked by a person, and phone numbers are not verified (no OTP yet).
 - 🗑️ **Expired sessions are rejected but not deleted;** a cleanup job is not built.
 - 🚦 **Rate limit on direct API calls.** Through the web app the client address cannot be faked, but a caller who hits the API URL directly could send a fake `X-Forwarded-For` to dodge the login limit. The fix is a gateway rate limit or accepting API traffic only from the web proxy.
+- 📉 **No load test yet.** Correctness under races is tested, but not throughput: how many riders and drivers at once the free Render and Neon tiers can serve is unknown.
 - 😴 **Hosting.** The free API tier sleeps when idle (slow first request), and the API image is large (~790 MB) because it includes the Prisma CLI to run migrations at start.
 
 ## 🚀 Next improvements
@@ -637,6 +642,7 @@ flowchart LR
 | **Document checks for drivers** | A `verification_status` on `driver_profiles` (pending → approved / rejected), photos of the NID or passport and the licence in object storage, and an admin screen. A driver goes online only when approved. |
 | **JWT for mobile apps** | Keep the cookie session for the web. For native apps: a short-lived access JWT (15 min) and a rotating refresh token stored as a hash (like today's sessions), so logout and stolen-token revocation still work. |
 | **Google sign-in** | OAuth 2.0 / OpenID Connect with Google: verify the ID token, link by verified email in an `auth_identities` table (provider, subject), then ask only for what Google does not give (phone, address, and for drivers the documents). |
+| **Load test** | A k6 script that ramps up simulated riders and drivers (request, accept, every stop action, cancel) against a staging copy, never the free production tier. It reports p95 latency, error rate, `503 BUSY` from the vehicle lock and database connection use, and it should run before each release. |
 | **Operations** | An admin view of trips and fees owed, a scheduled job that deletes expired sessions, and a `DEMO_MODE` flag that hides the demo buttons and skips demo accounts in production. |
 | **Scale** | The steps in the Bonus section above, in that order: connection pooler, replicas for reads, push updates, then partitioning by city area. |
 
@@ -677,7 +683,7 @@ flowchart LR
 - 🤖 CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - 🕵️ A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - ❌ A later audit of the passenger cancel ran every race around it as real parallel requests. The data was always right, but three answers were wrong: a double tap got `409`, a cancel racing a no-show got `409`, and a driver racing a cancel was not told the rider cancelled. All three were fixed and tested (D-016). The same run exposed a flaky test (too much work for vitest's 5 s limit), which was split up rather than retried.
-- 🌐 A live stress test through the public URL (63 checks, including the races over the real network) found that the login rate limit did not count the real client behind Vercel and Render. It was fixed and re-checked live (v1.0.1).
+- 🌐 A live end-to-end check through the public URL (63 checks, including the races over the real network) found that the login rate limit did not count the real client behind Vercel and Render. It was fixed and re-checked live (v1.0.1).
 - 🔐 No secrets, keys or personal data were given to the AI. Demo accounts use the reserved `.test` domain.
 
 ## 🎬 Demo video

@@ -673,7 +673,7 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 
 ## D-013: Rate-limit key behind Vercel and Render (2026-09-29, v1.0.1)
 
-**Found by the live stress test:** repeated wrong logins through the public URL did not reach `429`. The limit counted by `req.ip`, derived from `trust proxy` = 2 hops, but the real chain (browser → Vercel → Render's edge → the API) has a changing number of hops and rotating proxy addresses, so most requests looked like a new client. Locally and in CI the limiter is skipped in tests, so this only showed up live.
+**Found by the live end-to-end check** (63 checks through the public URL; called a "stress test" at the time, but it is not a load test): repeated wrong logins through the public URL did not reach `429`. The limit counted by `req.ip`, derived from `trust proxy` = 2 hops, but the real chain (browser → Vercel → Render's edge → the API) has a changing number of hops and rotating proxy addresses, so most requests looked like a new client. Locally and in CI the limiter is skipped in tests, so this only showed up live.
 
 **Options:**
 - (a) Tune `TRUST_PROXY_HOPS`: fragile, because the hop count is not constant.
