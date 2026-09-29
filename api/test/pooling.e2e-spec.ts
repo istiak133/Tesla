@@ -148,6 +148,50 @@ describe('Ride requests and pooling (e2e)', () => {
     expect(members.reduce((sum, m) => sum + m.seats, 0)).toBe(pool.seatsTaken);
   });
 
+  it('the PRD case: Nusrat and Shirin claim Bullet’s last seat at the same instant', async () => {
+    // Rafiq takes 2 of Bullet's 3 seats, so exactly one seat is left at Banani.
+    for (let round = 0; round < 5; round++) {
+      await resetDatabase(app);
+      await seedStoryCast(app);
+      BAN = await zoneId(app, 'BAN');
+      MOH = await zoneId(app, 'MOH');
+      GL1 = await zoneId(app, 'GL1');
+      const jashim = await jashimOnline();
+      const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+      const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+      const shirin = await loginAs(app, 'shirin@teslapool.test');
+      const rafiqRide = await rafiq
+        .post('/rides')
+        .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 2 });
+      await jashim
+        .post(`/driver/requests/${rafiqRide.body.id}/accept`)
+        .expect(200);
+
+      // Both see one free seat and ask at the same moment.
+      const [nusratRide, shirinRide] = await Promise.all([
+        nusrat
+          .post('/rides')
+          .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
+        shirin
+          .post('/rides')
+          .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
+      ]);
+
+      // Exactly one gets the seat; the other keeps waiting and is not lost.
+      const statuses = [nusratRide.body.status, shirinRide.body.status].sort();
+      expect(statuses).toEqual(['MATCHED', 'REQUESTED']);
+      const pool = await prisma.pool.findFirstOrThrow();
+      expect(pool.seatsTaken).toBe(3);
+      const waiting = await jashim.get('/driver/requests');
+      expect(waiting.body).toEqual([
+        expect.objectContaining({
+          canAccept: false,
+          reason: '1 seat(s) short',
+        }),
+      ]);
+    }
+  });
+
   it('two accepts at the same moment create one pool, not two', async () => {
     const jashim = await jashimOnline();
     const nusrat = await loginAs(app, 'nusrat@teslapool.test');
