@@ -13,6 +13,8 @@ export type RideStatus =
 
 export type User = { id: string; name: string; email: string; role: Role };
 
+export type IdDocumentType = "NID" | "PASSPORT";
+
 export type Zone = { id: string; code: string; name: string };
 
 export type Route = {

@@ -33,9 +33,14 @@ export async function api<T>(
   if (!response.ok) {
     // The API sends { code, message } for business errors and { message } for validation errors.
     const message = Array.isArray(data?.message)
-      ? data.message.join(", ")
+      ? data.message.map(sentenceCase).join(". ")
       : (data?.message ?? "Something went wrong");
     throw new ApiError(response.status, data?.code ?? null, message);
   }
   return data as T;
+}
+
+// Validation messages start with the field name in lower case ("password must be…").
+function sentenceCase(message: string): string {
+  return message.charAt(0).toUpperCase() + message.slice(1);
 }

@@ -39,12 +39,12 @@ export function RouteLine({
                 {/* line to the previous and to the next stop */}
                 {index > 0 && (
                   <span
-                    className={`absolute left-0 right-1/2 h-0.5 ${riddenAfter(index - 1) ? "bg-zinc-900" : "bg-zinc-200"}`}
+                    className={`absolute left-0 right-1/2 h-0.5 ${riddenAfter(index - 1) ? "bg-stone-900" : "bg-stone-200"}`}
                   />
                 )}
                 {index < stops.length - 1 && (
                   <span
-                    className={`absolute left-1/2 right-0 h-0.5 ${riddenAfter(index) ? "bg-zinc-900" : "bg-zinc-200"}`}
+                    className={`absolute left-1/2 right-0 h-0.5 ${riddenAfter(index) ? "bg-stone-900" : "bg-stone-200"}`}
                   />
                 )}
                 {/* the stop itself */}
@@ -55,8 +55,8 @@ export function RouteLine({
                     <span
                       className={`h-3 w-3 rounded-full border-2 ${
                         ridden(index)
-                          ? "border-zinc-900 bg-zinc-900"
-                          : "border-zinc-300 bg-white"
+                          ? "border-stone-900 bg-stone-900"
+                          : "border-stone-300 bg-paper"
                       }`}
                     />
                   )}
@@ -71,14 +71,14 @@ export function RouteLine({
               <p
                 className={`mt-2 px-1 text-center text-xs leading-tight ${
                   ridden(index) || carHere
-                    ? "font-medium text-zinc-900"
-                    : "text-zinc-500"
+                    ? "font-medium text-stone-900"
+                    : "text-stone-500"
                 }`}
               >
                 {name}
               </p>
               {notes[index] && (
-                <p className="mt-0.5 px-1 text-center text-[11px] leading-tight text-zinc-500">
+                <p className="mt-0.5 px-1 text-center text-[11px] leading-tight text-stone-500">
                   {notes[index]}
                 </p>
               )}
@@ -96,7 +96,7 @@ function CarMarker({ moving = false }: { moving?: boolean }) {
     <span
       className={`flex h-6 w-6 items-center justify-center rounded-full ring-4 ring-emerald-100 ${
         moving
-          ? "border border-emerald-600 bg-white text-emerald-700"
+          ? "border border-emerald-600 bg-paper text-emerald-700"
           : "bg-emerald-600 text-white"
       }`}
       aria-label={moving ? "Car on the way" : "Car at this stop"}

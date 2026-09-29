@@ -19,10 +19,10 @@ export function ProgressSteps({ status }: { status: RideStatus }) {
         return (
           <li key={step.status} className="flex flex-1 flex-col gap-1.5">
             <span
-              className={`h-1.5 rounded-full ${done ? "bg-zinc-900" : "bg-zinc-200"}`}
+              className={`h-1.5 rounded-full ${done ? "bg-stone-900" : "bg-stone-200"}`}
             />
             <span
-              className={`text-xs ${done ? "font-medium text-zinc-900" : "text-zinc-400"}`}
+              className={`text-xs ${done ? "font-medium text-stone-900" : "text-stone-400"}`}
             >
               {step.label}
             </span>

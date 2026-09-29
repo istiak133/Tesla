@@ -67,10 +67,10 @@ export function RoutePicker({ state }: { state: DriverState }) {
   const shown = routes.data?.find((route) => route.id === shownId);
 
   return (
-    <div className="space-y-4 rounded-2xl border border-zinc-200 bg-white px-5 py-4 shadow-sm">
+    <div className="space-y-4 rounded-2xl border border-stone-200 bg-paper px-5 py-4 shadow-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
         <label className="flex items-center gap-3">
-          <span className="whitespace-nowrap text-sm font-medium text-zinc-700">
+          <span className="whitespace-nowrap text-sm font-medium text-stone-700">
             You are at
           </span>
           <select
@@ -91,7 +91,7 @@ export function RoutePicker({ state }: { state: DriverState }) {
         </label>
 
         <label className="flex items-center gap-3">
-          <span className="whitespace-nowrap text-sm font-medium text-zinc-700">
+          <span className="whitespace-nowrap text-sm font-medium text-stone-700">
             Route
           </span>
           <select
@@ -124,7 +124,7 @@ export function RoutePicker({ state }: { state: DriverState }) {
           </Button>
         )}
         {locked && (
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-stone-500">
             Fixed until this trip ends
           </span>
         )}
@@ -156,7 +156,7 @@ export function RoutePicker({ state }: { state: DriverState }) {
         </div>
       )}
       {!locked && suggestions.data && !suggestions.data.currentZone && (
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-stone-500">
           Tell us where you are to get a route suggestion.
         </p>
       )}
