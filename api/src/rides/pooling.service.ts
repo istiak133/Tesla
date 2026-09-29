@@ -94,6 +94,14 @@ export class PoolingService {
     actorUserId: string | null,
     reason: string,
   ): Promise<void> {
+    // R4 includes "the driver is online". A driver with an active trip cannot go
+    // offline, but it is checked here too, on the locked row, so R1–R4 are all re-checked.
+    const vehicle = await tx.vehicle.findUniqueOrThrow({
+      where: { id: pool.vehicleId },
+    });
+    if (!vehicle.isOnline) {
+      throw new RideError('DRIVER_OFFLINE', 'The driver is offline');
+    }
     const stops = await this.ridesRepository.findRouteStops(tx, pool.routeId);
     const problem = joinProblem(pool, stops, ride);
     if (problem !== null) {
