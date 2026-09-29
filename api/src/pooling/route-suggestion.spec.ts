@@ -1,22 +1,29 @@
-import { routeDirections } from '../geography/dhaka-routes.js';
+import { kmFromStart, routeDirections } from '../geography/dhaka-routes.js';
+import { DISTANCE_KM, ZONES } from '../geography/dhaka-zones.js';
 import type { Stop } from './route-plan.js';
 import { rankRoutes, suggestedRoute } from './route-suggestion.js';
 
 // The six seeded routes, with zone codes as ids so the examples read like the docs.
-const ROUTES = routeDirections().map((route) => ({
-  id: route.code,
-  code: route.code,
-  name: route.code,
-  stops: route.stops.map((code, position): Stop => ({
-    position,
-    zoneId: code,
-    name: code,
-  })),
-}));
+const ROUTES = routeDirections().map((route) => {
+  const km = kmFromStart(route.stops);
+  return {
+    id: route.code,
+    code: route.code,
+    name: route.code,
+    stops: route.stops.map((code, position): Stop => ({
+      position,
+      zoneId: code,
+      name: code,
+      kmFromStart: km[position],
+    })),
+  };
+});
 
+const indexOf = (code: string) => ZONES.findIndex((zone) => zone.code === code);
 const trip = (pickupZoneId: string, dropoffZoneId: string) => ({
   pickupZoneId,
   dropoffZoneId,
+  distanceKm: DISTANCE_KM[indexOf(pickupZoneId)][indexOf(dropoffZoneId)],
 });
 
 describe('route suggestion (docs/assumptions.md §4.6)', () => {

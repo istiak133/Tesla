@@ -11,7 +11,7 @@ export type RouteSummary = {
   id: string;
   code: string;
   name: string;
-  stops: { position: number; zone: ZoneSummary }[];
+  stops: { position: number; kmFromStart: number; zone: ZoneSummary }[];
 };
 
 @Injectable()
@@ -37,6 +37,7 @@ export class GeographyRepository {
           orderBy: { position: 'asc' },
           select: {
             position: true,
+            kmFromStart: true,
             zone: { select: { id: true, code: true, name: true } },
           },
         },
@@ -82,5 +83,6 @@ export function toStops(route: RouteSummary): Stop[] {
     position: stop.position,
     zoneId: stop.zone.id,
     name: stop.zone.name,
+    kmFromStart: stop.kmFromStart,
   }));
 }

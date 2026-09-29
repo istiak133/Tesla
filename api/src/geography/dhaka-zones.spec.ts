@@ -30,7 +30,7 @@ describe('Dhaka distance table', () => {
     }
   });
 
-  it('satisfies the triangle inequality, so a detour is never negative', () => {
+  it('satisfies the triangle inequality, so a route is never shorter than direct', () => {
     for (let a = 0; a < n; a++) {
       for (let b = 0; b < n; b++) {
         for (let c = 0; c < n; c++) {

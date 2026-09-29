@@ -1,7 +1,7 @@
 // Seed steps shared by the seed script and the e2e tests.
 // Every step upserts by a natural key, so running it again changes nothing.
 import { hashPassword } from '../auth/password.js';
-import { routeDirections } from '../geography/dhaka-routes.js';
+import { kmFromStart, routeDirections } from '../geography/dhaka-routes.js';
 import { DISTANCE_KM, ZONES } from '../geography/dhaka-zones.js';
 import { PrismaClient, Role } from '../generated/prisma/client.js';
 
@@ -54,12 +54,14 @@ export async function seedGeography(prisma: PrismaClient): Promise<void> {
       update: { name: `${first} → ${last}` },
       create: { code: route.code, name: `${first} → ${last}` },
     });
+    const km = kmFromStart(route.stops);
     for (let position = 0; position < route.stops.length; position++) {
       const zoneId = zoneIdByCode.get(route.stops[position])!;
+      const stop = { zoneId, kmFromStart: km[position] };
       await prisma.routeStop.upsert({
         where: { routeId_position: { routeId: saved.id, position } },
-        update: { zoneId },
-        create: { routeId: saved.id, position, zoneId },
+        update: stop,
+        create: { routeId: saved.id, position, ...stop },
       });
     }
   }

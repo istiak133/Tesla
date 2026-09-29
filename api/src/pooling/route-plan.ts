@@ -2,14 +2,27 @@
 //
 // A pool follows one route (a list of zones in driving order). A stop's position is its
 // index in that list. The vehicle is at, or heading to, the pool's current stop.
-// A passenger can join if (R1) the route passes their pickup and then their drop-off,
-// (R2) the vehicle has not passed their pickup yet, (R3) there are enough free seats,
-// and (R4) the pool is still active.
+// A passenger can join if (R1) the route passes their pickup and then their drop-off
+// without going too far round, (R2) the vehicle has not passed their pickup yet,
+// (R3) there are enough free seats, and (R4) the pool is still active.
 
 import { RideStatus } from '../generated/prisma/client.js';
 
-/** One stop of a route. `position` 0 is the first stop. */
-export type Stop = { position: number; zoneId: string; name: string };
+/**
+ * One stop of a route. `position` 0 is the first stop; `kmFromStart` is the route's
+ * distance from the first stop to this one, so the km between two stops is a subtraction.
+ */
+export type Stop = {
+  position: number;
+  zoneId: string;
+  name: string;
+  kmFromStart: number;
+};
+
+// R1, "not too far round": riding the route may add at most 2 km to the direct
+// distance, or 40% on longer trips, whichever allows more (docs/assumptions.md §3.3).
+export const MAX_EXTRA_KM = 2;
+export const MAX_STRETCH_PERCENT = 140;
 
 export type PoolSnapshot = {
   status: RideStatus;
@@ -21,6 +34,7 @@ export type PoolSnapshot = {
 export type Trip = {
   pickupZoneId: string;
   dropoffZoneId: string;
+  distanceKm: number; // direct distance, from the distance table
   seats: number;
 };
 
@@ -49,6 +63,41 @@ export function tripStops(
   return { pickupStop: pickup.position, dropoffStop: dropoff.position };
 }
 
+/** Km the car drives between two stops of its route. */
+export function routeKm(stops: Stop[], from: number, to: number): number {
+  return stops[to].kmFromStart - stops[from].kmFromStart;
+}
+
+/**
+ * Why this route cannot carry this trip at all (R1), or null if it can:
+ * the route must pass the pickup, then the drop-off, and not go too far round.
+ */
+export function routeProblem(
+  stops: Stop[],
+  trip: { pickupZoneId: string; dropoffZoneId: string; distanceKm: number },
+): string | null {
+  const positions = tripStops(stops, trip);
+  if (positions === null) {
+    return 'Not on this route in this direction';
+  }
+  const riddenKm = routeKm(stops, positions.pickupStop, positions.dropoffStop);
+  const withinExtraKm = riddenKm <= trip.distanceKm + MAX_EXTRA_KM;
+  // Integer maths: riddenKm ≤ 1.4 × directKm  ⇔  100 × riddenKm ≤ 140 × directKm.
+  const withinStretch = riddenKm * 100 <= trip.distanceKm * MAX_STRETCH_PERCENT;
+  if (!withinExtraKm && !withinStretch) {
+    return `This route goes too far round (${riddenKm} km for a ${trip.distanceKm} km trip)`;
+  }
+  return null;
+}
+
+/** True if the route can carry the trip (R1). */
+export function servesTrip(
+  stops: Stop[],
+  trip: { pickupZoneId: string; dropoffZoneId: string; distanceKm: number },
+): boolean {
+  return routeProblem(stops, trip) === null;
+}
+
 /**
  * Why this trip cannot join the pool, or null if it can (R1–R4).
  * The message is shown to the driver and returned with the 409.
@@ -61,13 +110,11 @@ export function joinProblem(
   if (!JOINABLE.includes(pool.status)) {
     return { code: 'POOL_NOT_OPEN', message: 'This trip has already ended' };
   }
-  const positions = tripStops(stops, trip);
-  if (positions === null) {
-    return {
-      code: 'NOT_COMPATIBLE',
-      message: 'Not on this route in this direction',
-    };
+  const onRoute = routeProblem(stops, trip);
+  if (onRoute !== null) {
+    return { code: 'NOT_COMPATIBLE', message: onRoute };
   }
+  const positions = tripStops(stops, trip)!;
   if (positions.pickupStop < pool.currentStop) {
     const pickupName = stops[positions.pickupStop].name;
     return {

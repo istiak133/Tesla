@@ -24,7 +24,7 @@ import { RidesService } from './rides.service.js';
 export class RidesController {
   constructor(private readonly ridesService: RidesService) {}
 
-  // POST /rides → request a ride (joins an open pool at once if one fits)
+  // POST /rides → request a ride (joins a Tesla on its way at once if one fits)
   @Post()
   requestRide(@CurrentUser() user: PublicUser, @Body() body: RequestRideDto) {
     return this.ridesService.requestRide(

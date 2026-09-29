@@ -194,6 +194,7 @@ export class RidesRepository {
       position: stop.position,
       zoneId: stop.zoneId,
       name: stop.zone.name,
+      kmFromStart: stop.kmFromStart,
     }));
   }
 
@@ -235,25 +236,34 @@ export class RidesRepository {
     rideId: string,
     passengerId: string,
   ): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
-      const result = await tx.rideRequest.updateMany({
-        where: { id: rideId, status: RideStatus.REQUESTED },
-        data: { status: RideStatus.CANCELLED },
-      });
-      if (result.count === 0) {
-        return false;
-      }
-      await tx.rideEvent.create({
-        data: {
-          rideRequestId: rideId,
-          fromStatus: RideStatus.REQUESTED,
-          toStatus: RideStatus.CANCELLED,
-          actorUserId: passengerId,
-          reason: 'Passenger cancelled before being matched',
-        },
-      });
-      return true;
+    return this.prisma.$transaction((tx) =>
+      this.cancelIfWaiting(tx, rideId, passengerId),
+    );
+  }
+
+  /** The same compare-and-set, inside a transaction the caller already holds. */
+  async cancelIfWaiting(
+    tx: Tx,
+    rideId: string,
+    passengerId: string,
+  ): Promise<boolean> {
+    const result = await tx.rideRequest.updateMany({
+      where: { id: rideId, status: RideStatus.REQUESTED },
+      data: { status: RideStatus.CANCELLED },
     });
+    if (result.count === 0) {
+      return false;
+    }
+    await tx.rideEvent.create({
+      data: {
+        rideRequestId: rideId,
+        fromStatus: RideStatus.REQUESTED,
+        toStatus: RideStatus.CANCELLED,
+        actorUserId: passengerId,
+        reason: 'Passenger cancelled while waiting for a driver',
+      },
+    });
+    return true;
   }
 }
 

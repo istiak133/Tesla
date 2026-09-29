@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
 import type { RouteSummary, ZoneSummary } from './geography.repository.js';
 import { GeographyService } from './geography.service.js';
 
@@ -11,6 +11,14 @@ export class GeographyController {
   @Get('zones')
   async listZones(): Promise<ZoneSummary[]> {
     return this.geographyService.listZones();
+  }
+
+  // GET /zones/:id/destinations → where a passenger can ride from this pickup
+  @Get('zones/:id/destinations')
+  async listDestinations(
+    @Param('id', ParseUUIDPipe) pickupZoneId: string,
+  ): Promise<ZoneSummary[]> {
+    return this.geographyService.listDestinations(pickupZoneId);
   }
 
   // GET /routes → every route with its stops in driving order
