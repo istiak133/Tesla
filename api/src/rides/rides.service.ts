@@ -94,7 +94,13 @@ export class RidesService {
     if (ride.passengerId !== passengerId) {
       throw new RideError('NOT_YOUR_RIDE', 'This ride belongs to someone else');
     }
-    return toRideView(ride);
+    return toRideView(ride, await this.unpaidDuesPaisa(passengerId));
+  }
+
+  /** Fees from late cancels this passenger still owes, paid with their next ride (D-018). */
+  async unpaidDuesPaisa(passengerId: string): Promise<number> {
+    const unpaid = await this.ridesRepository.findUnpaidFees(passengerId);
+    return unpaid.reduce((sum, ride) => sum + ride.cancellationFeePaisa, 0);
   }
 
   async getCurrentRide(passengerId: string): Promise<RideView | null> {
@@ -115,6 +121,8 @@ export class RidesService {
       dropoff: ride.dropoffZone.name,
       seats: ride.seats,
       farePaisa: ride.finalFarePaisa ?? ride.estimatedFarePaisa,
+      cancellationFeePaisa: ride.cancellationFeePaisa,
+      duesCollectedPaisa: ride.duesCollectedPaisa,
       createdAt: ride.createdAt,
     }));
   }

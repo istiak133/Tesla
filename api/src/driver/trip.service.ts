@@ -161,9 +161,29 @@ export class TripService {
         shared,
       );
 
+      // Late-cancel fees this passenger still owes are paid now, in the same cash (D-018).
+      const unpaid = await this.ridesRepository.findUnpaidFees(
+        member.rideRequest.passengerId,
+        tx,
+      );
+      const dues = unpaid.reduce(
+        (sum, ride) => sum + ride.cancellationFeePaisa,
+        0,
+      );
+      if (unpaid.length > 0) {
+        await tx.rideRequest.updateMany({
+          where: { id: { in: unpaid.map((ride) => ride.id) } },
+          data: { feePaidWithRideId: rideId },
+        });
+      }
+
       await tx.rideRequest.update({
         where: { id: rideId },
-        data: { status: RideStatus.COMPLETED, finalFarePaisa: fare },
+        data: {
+          status: RideStatus.COMPLETED,
+          finalFarePaisa: fare,
+          duesCollectedPaisa: dues,
+        },
       });
       await tx.poolMember.update({
         where: { id: member.id },
@@ -182,10 +202,14 @@ export class TripService {
           actorUserId: driverId,
           reason: `Dropped off at ${stops[pool.currentStop].name}; ${
             shared ? 'shared ride, 20% off' : 'rode alone'
-          }; pay in cash`,
+          }; pay in cash${
+            dues > 0 ? ` with Tk ${dues / 100} from an earlier cancel` : ''
+          }`,
         },
       });
 
+      // Seats freed here can go straight to riders waiting ahead (D-017).
+      await this.poolingService.fillFreedSeats(tx, pool.id);
       await this.poolingService.closeIfEmpty(tx, pool.id);
     });
     return this.driverService.getCurrentPool(driverId);

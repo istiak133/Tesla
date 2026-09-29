@@ -673,7 +673,7 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 
 ## D-013: Rate-limit key behind Vercel and Render (2026-09-29, v1.0.1)
 
-**Found by the live stress test:** repeated wrong logins through the public URL did not reach `429`. The limit counted by `req.ip`, derived from `trust proxy` = 2 hops, but the real chain (browser → Vercel → Render's edge → the API) has a changing number of hops and rotating proxy addresses, so most requests looked like a new client. Locally and in CI the limiter is skipped in tests, so this only showed up live.
+**Found by the live end-to-end check** (63 checks through the public URL; called a "stress test" at the time, but it is not a load test): repeated wrong logins through the public URL did not reach `429`. The limit counted by `req.ip`, derived from `trust proxy` = 2 hops, but the real chain (browser → Vercel → Render's edge → the API) has a changing number of hops and rotating proxy addresses, so most requests looked like a new client. Locally and in CI the limiter is skipped in tests, so this only showed up live.
 
 **Options:**
 - (a) Tune `TRUST_PROXY_HOPS`: fragile, because the hop count is not constant.
@@ -863,12 +863,131 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - **A test flake found and removed:** the first version of the cancel tests packed five scenarios into one test (five database resets, about 14 logins). Under load that passed vitest's 5 s default and failed now and then. It is split into one test per state, and the round-based race tests have an explicit 30 s limit.
 
 **Problems at the moment of cancelling that are business, not races (kept, with reasons):**
-- **The driver's wasted drive:** a `MATCHED` or `DRIVER_ARRIVED` cancel costs the driver time and empty km, and they earn nothing for it. Real apps charge a fee after a grace period or once the car has arrived. We cannot collect a fee in cash from someone who never rides, so a fee needs the TeslaPay wallet first. Plan: when the car has arrived, a fee equal to the driver's ৳20 pickup pay, paid to the driver.
+- **The driver's wasted drive** (built later in D-018): a `MATCHED` or `DRIVER_ARRIVED` cancel costs the driver time and empty km, and they earn nothing for it. Real apps charge a fee after a grace period or once the car has arrived. We cannot collect a fee in cash from someone who never rides, so a fee needs the TeslaPay wallet first. Plan: when the car has arrived, a fee equal to the driver's ৳20 pickup pay, paid to the driver.
 - **Cancel spam:** requesting and cancelling repeatedly is not limited today (only sign-up and login are). Plan: a per-passenger limit on cancels after a match (for example 3 an hour), then a short cool-down.
-- **A freed seat is not offered to others automatically:** another waiting rider who now fits waits until a driver accepts them from the list, where they show as takeable. Release-triggered re-matching (F2) is future work.
+- **A freed seat is not offered to others automatically** (built later in D-017): another waiting rider who now fits waits until a driver accepts them from the list, where they show as takeable. Release-triggered re-matching (F2) is future work.
 - **The driver's screen is up to 3 s behind:** a cancelled rider can stay on the driver's list until the next poll. An accept then gets the clear `409` above.
 
 **Tests:**
 - New: `test/cancel.e2e-spec.ts` (9): every allowed and refused state, an empty trip closing, and four races over 5 rounds each (double cancel, cancel vs accept, cancel vs pickup, cancel vs no-show).
 - The seat invariant is checked after each round.
 - All suites pass: 72 unit, 62 e2e.
+
+## D-017: A freed seat goes straight to a waiting rider (2026-09-30)
+
+**Context (his request).** Until now a seat freed by a cancel, a no-show or a drop-off stayed empty until a driver accepted someone from the list. Auto-join only ran when a request was created. He wants the system to seat a waiting rider by itself.
+
+**Decision (built):**
+- **One helper:** `PoolingService.fillFreedSeats(tx, poolId)` runs right after a seat is freed, in the same transaction and under the same vehicle lock.
+- **It runs after:**
+  - a passenger cancel
+  - a no-show
+  - a drop-off
+- It runs before `closeIfEmpty`, so a trip that would have ended keeps going if someone takes the seat.
+- **Who gets the seat:**
+  - Only waiting riders whose pickup is at or after the car's stop on this route.
+  - Only trips the route carries (R1–R4, checked by the same `joinProblem` and `joinUnderLock` as every join).
+  - Order: the driver's list order. Riders waiting 5+ minutes first, then the nearest pickup, then the oldest.
+  - Repeated until the car is full or nobody fits.
+- **No seat hold and no driver tap, the same as auto-join (D-009).** The rider's history says "A seat came free in a Tesla on the way: joined automatically".
+
+**Concurrency:**
+- **Locking the candidates:** waiting riders are locked with `SELECT … FOR UPDATE SKIP LOCKED` before any is seated.
+  - A rider another transaction is taking at that moment is skipped, not waited for. That could be a driver's accept, another car filling its seat, or the rider's own cancel.
+  - So two cars filling seats at once can never deadlock over the same riders, and never both seat the same one. The compare-and-set on the request is still there as well.
+- **Savepoint:** the whole fill runs inside `SAVEPOINT fill_freed_seats`. If anything fails, it is rolled back to the savepoint and logged. The cancel or drop-off that freed the seat still commits, and the riders keep waiting (best effort, like auto-join).
+- **The rider cancels at the same moment:** either the cancel wins and the rider is not a candidate, or the fill wins and the cancel then takes her out of the car under its lock (D-016). She always ends `CANCELLED`, and the seats add up.
+
+**Options considered:**
+- Offer the seat to the rider and wait for a yes: that is a seat hold, refused in D-009.
+- A background job that re-matches every few seconds: simpler locking, but a delay, and a job to run and monitor. Doing it inside the transaction that freed the seat is immediate and needs nothing new.
+
+**Tests:** `test/refill.e2e-spec.ts` (6):
+- seat freed by a cancel
+- seat freed by a no-show
+- a rider behind the car is never taken
+- 5+ minutes first, then the nearest
+- **race:** two cars free a seat at the same moment, 5 rounds; the rider ends in exactly one
+- **race:** the rider cancels while a seat frees for her, 5 rounds
+
+Two earlier tests now expect the new behaviour, a rider seated at a drop-off without a driver's accept: `pooling.e2e-spec.ts` and `full-journey.e2e-spec.ts`.
+
+## D-018: Tk 20 late-cancel fee, paid with the next ride (2026-09-30)
+
+**Context (his request and his three answers):**
+- **Rule:** a passenger who cancels after the driver has pressed "Leave for …" towards their stop pays Tk 20.
+- **When (his choice):** the car is coming straight to their stop, or is standing at it.
+- **How to pay (his choice):** with the next ride, in cash.
+- **Who gets it (his choice):** all of it goes to the driver.
+
+**Decision (built):**
+- **When:** `pool.current_stop = the rider's pickup stop`. The car is driving to that stop (the driver left the previous one), or it is there. That covers:
+  - a new trip that started at the rider's stop
+  - `STARTED` towards it
+  - `DRIVER_ARRIVED` at it
+- **Free:**
+  - while waiting for a driver
+  - while the car is a stop or more away
+  - during a **2-minute grace period** after getting the seat
+- **Why the grace period:** with auto-join and D-017 a rider can be seated automatically in a car that is already coming to their stop. Charging them for cancelling seconds later would be unfair. Two minutes matches common ride-app practice.
+- **No-show costs the same Tk 20.** Otherwise a rider could skip the fee by simply not showing up, which is worse for the driver than a cancel.
+- **Recording:**
+  - The cancelled ride stores `cancellation_fee_paisa` and `cancellation_fee_pool_id`, the trip whose driver earns it.
+  - The pool is stored explicitly because a ride can have been in an earlier trip that the driver cancelled.
+  - The history says "…; Tk 20 fee, paid with the next ride".
+  - A double cancel does not charge twice (D-016 idempotency).
+- **Paying (cash):**
+  - The passenger's next ride shows `duesPaisa` ("+ Tk 20 from an earlier late cancel").
+  - The driver's screen shows "+ Tk 20 to collect".
+  - At drop-off, that ride's `dues_collected_paisa` records it, and the old ride's `fee_paid_with_ride_id` is set to the new ride.
+  - Only one ride is active per passenger, so this cannot be paid twice or raced.
+- **The money between the two drivers:**
+  - The driver who came earns the fee. Their past trip shows "incl. Tk 20 late-cancel fee (Nusrat)", and the platform pays it to them, so it lowers what they owe.
+  - The driver who later collects it in cash hands it to the platform, so it raises what they owe.
+  - The platform's net is zero.
+  - The trip's fare split (`collected = driver + platform`) is unchanged, so the exhaustive earnings proof (D-010) still holds.
+- **Database guards:**
+  - fees ≥ 0
+  - only a `CANCELLED` ride can carry a fee
+  - a fee always names its trip
+  - a paid mark needs a fee
+  - a partial index for finding what a passenger owes
+
+**Options considered (asked):**
+- Fee only at the stop.
+- Fee any time after a match.
+- Record it only as owed.
+- Block new rides until paid: impossible to pay without a ride in a cash system.
+
+**Known limits:**
+- A passenger who never rides again never pays. The fee stays owed.
+- The fee is fixed at Tk 20, with no surge or per-km part.
+
+**Tests:**
+- Unit, `fares/cancellation.spec.ts` (3): stops away, coming or here, the grace edge.
+- `test/cancel-fee.e2e-spec.ts` (5):
+  - free while stops away
+  - Tk 20 after the driver left for her stop, and the screen warns first
+  - free in the grace period
+  - a no-show costs the same
+  - the full money trail: fee earned on the first trip, shown due on the next ride, collected at drop-off, the old ride marked paid, both drivers' views
+
+## D-019: The route list shows only routes through the car (2026-09-30)
+
+**Bug (his report):** the route drop-down listed all six routes. Since D-014 a route must pass the car's zone to be chosen, so four of them were refused with `409` after the tap.
+
+**Decision:**
+- `GET /driver/routes` returns only the routes that pass the car's current zone, ranked by riders waiting ahead.
+- The drop-down shows exactly those, each as "N waiting" or "nobody waiting", plus "· suggested".
+- No location yet → no routes, and "Set your location first".
+- During a trip only the current route is shown.
+- **Moving off the route:** setting a location that the chosen route does not pass clears the route and sets the driver offline. The driver picks one of the routes listed for the new location and goes online again. Found in the browser check: first the old route stayed in the list, marked "not through …", which went against "only the routes through the car".
+
+**His question: does the system pick the busiest route automatically?** No. D-009 is a hybrid: the system suggests the route with the most riders waiting ahead through the car's zone, and the driver takes it with one tap or picks another. It is not assigned automatically, because there is no live GPS and the driver must agree to drive it.
+
+**Test:** `driver-routes.e2e-spec.ts`:
+- at Banani, the four routes through Banani
+- at Mirpur 10, only the Mirpur line, with the waiting count
+- with no location, none
+- moving to Mirpur 10 clears Uttara → Bashundhara and sets the driver offline
+- moving along the chosen route keeps it (`matching.e2e-spec.ts` updated the same way)

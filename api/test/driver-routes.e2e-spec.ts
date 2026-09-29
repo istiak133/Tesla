@@ -69,6 +69,65 @@ describe('Route suggestions and the car’s location (e2e)', () => {
     expect(chosen.body.vehicle.route.name).toBe('Banani → Dhanmondi');
   });
 
+  it('lists only the routes that pass where the car is, each with the riders waiting on it', async () => {
+    const jashim = await loginAs(app, 'jashim@teslapool.test');
+    const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+    const [M10, MR2] = await Promise.all([
+      zoneId(app, 'M10'),
+      zoneId(app, 'MR2'),
+    ]);
+    const rafiqRide = await rafiq
+      .post('/rides')
+      .send({ pickupZoneId: M10, dropoffZoneId: MR2, seats: 1 });
+    expect(rafiqRide.body.status).toBe('REQUESTED');
+
+    // At Banani: the two lines through Banani, both ways, and nothing else.
+    const atBanani = (await jashim.get('/driver/routes')).body;
+    expect(atBanani.routes.map((r: { name: string }) => r.name).sort()).toEqual(
+      [
+        'Banani → Dhanmondi',
+        'Bashundhara → Uttara',
+        'Dhanmondi → Banani',
+        'Uttara → Bashundhara',
+      ],
+    );
+    expect(
+      atBanani.routes.every((r: { passesYou: boolean }) => r.passesYou),
+    ).toBe(true);
+
+    // At Mirpur 10: Uttara → Bashundhara no longer passes the car, so it is cleared and
+    // Jashim is offline until he picks a route from the list.
+    await jashim.post('/driver/online').expect(200);
+    const moved = await jashim
+      .post('/driver/location')
+      .send({ zoneId: M10 })
+      .expect(200);
+    expect(moved.body.vehicle).toMatchObject({ route: null, isOnline: false });
+    // Only the Mirpur line is listed, with Rafiq counted on the way to Dhanmondi.
+    const atMirpur = (await jashim.get('/driver/routes')).body;
+    expect(atMirpur.routes).toEqual([
+      expect.objectContaining({ name: 'Uttara → Dhanmondi', waitingAhead: 1 }),
+      expect.objectContaining({ name: 'Dhanmondi → Uttara', waitingAhead: 0 }),
+    ]);
+
+    // Moving along a route the driver already drives keeps it.
+    const mirpurLine = atMirpur.routes[0].routeId;
+    await jashim
+      .post('/driver/route')
+      .send({ routeId: mirpurLine })
+      .expect(200);
+    const MR2kept = await jashim
+      .post('/driver/location')
+      .send({ zoneId: MR2 })
+      .expect(200);
+    expect(MR2kept.body.vehicle.route.id).toBe(mirpurLine);
+
+    // Location unknown: nothing to choose until the driver sets it.
+    await prisma.vehicle.updateMany({ data: { currentZoneId: null } });
+    const nowhere = (await jashim.get('/driver/routes')).body;
+    expect(nowhere).toMatchObject({ currentZone: null, routes: [] });
+  });
+
   it('the car’s location follows the stops, and cannot be set by hand during a trip', async () => {
     const jashim = await loginAs(app, 'jashim@teslapool.test');
     const nusrat = await loginAs(app, 'nusrat@teslapool.test');
