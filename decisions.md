@@ -811,3 +811,64 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
   - a duplicate document, licence or plate is refused with nothing half made, and the index holds without the service
   - a new driver sets location and route, goes online and accepts a real ride
   - login with the right type; the same answer for a wrong password and an unknown email; `WRONG_ACCOUNT_TYPE` only after the password, with no cookie; the type is required
+
+---
+
+# Cancelling
+
+## D-016: Passenger cancel, its races, and what it costs others (2026-09-30)
+
+**Context (his request).** Write down exactly how a passenger cancels, when, what can go wrong at that moment, and every race around it; solve any race that is not solved.
+
+**The rule (unchanged):**
+- A passenger may cancel while the ride is `REQUESTED` (waiting for a driver), `MATCHED` (the car is on its way) or `DRIVER_ARRIVED` (the car is at their stop).
+- Not once `STARTED` (in the car): `409` "A ride cannot be cancelled after pickup".
+- Not once `COMPLETED`: `409` "This ride is already finished".
+- Only the owner; anyone else gets `403 NOT_YOUR_RIDE`.
+- No fee.
+- The web shows "Cancel ride" only in the three allowed states.
+
+**What a cancel does, in one transaction:**
+- **Waiting ride (no car yet):** a compare-and-set `REQUESTED → CANCELLED` and a history row. No vehicle lock is needed, because the ride holds no seat.
+- **Ride in a car:** under that car's lock (`SELECT … FOR UPDATE`):
+  - the ride becomes `CANCELLED`
+  - its `pool_members` row gets `left_at`
+  - `seats_taken` goes down by its seats
+  - a history row is written, and `closeIfEmpty` runs
+- **Closing the trip:** if nobody is left, the trip closes, `CANCELLED` if nobody was ever carried (no money split). The driver can accept a new request at once.
+- **After the cancel:** the one-active-ride rule no longer holds the passenger, so they can request again immediately.
+- **Co-riders' fares never go up.** Sharing counts only riders who were really in the car (`STARTED` or `COMPLETED`). If Rafiq cancels, Nusrat pays her solo estimate (৳75), which is what she was shown.
+
+**Races around a cancel.** Each was run as a real race: parallel HTTP calls, 5 fresh rounds each, in `test/cancel.e2e-spec.ts`.
+
+| Race | What must happen | Before this change | Now |
+|---|---|---|---|
+| Cancel vs driver accept (ride waiting) | One wins; no empty trip left; the driver told why | Correct data, but the driver saw a vague "no longer waiting" | Correct, and the driver sees "The passenger cancelled this request" |
+| Two cancels at once (double tap, retry after a timeout) | Both get the cancelled ride; cancelled once; seat freed once | **Second tap got `409`** although the ride was cancelled | Both `200`: a cancelled ride is returned as it is (idempotent) |
+| Cancel vs no-show at the stop | Cancelled once, seat freed once; the passenger gets a clean answer | **Passenger got `409`** when the no-show landed first | `200` with the cancelled ride; one `CANCELLED` event |
+| Cancel vs pickup | Exactly one happens | Correct (serialised by the lock) | Unchanged; now tested: `STARTED` + cancel `409`, or `CANCELLED` + pickup `404` |
+| Cancel vs the driver's trip cancel | The passenger ends `CANCELLED`, the others back to waiting | Fixed in D-011 | Unchanged |
+| The ride changes between the read and the lock (trip cancelled, another car accepts) | Look again under the right lock | One retry, and an empty membership read ended in a wrong `409` | Up to 3 looks, each deciding only on what it saw under the right lock; then `503 BUSY` "please try again" |
+| Cancel vs the seat counter | `seats_taken` = the seats of riders still in the trip | Correct | Checked after every race round |
+
+**The code change (`RidesService.cancelRide`):**
+- One loop of up to 3 attempts replaces the if/fall-through with a single retry.
+- Each attempt reads the ride:
+  - `CANCELLED` → return it
+  - `STARTED` / `COMPLETED` → refuse
+  - `REQUESTED` → compare-and-set, or look again
+  - in a car → lock that car and decide on the locked rows
+- Under the lock, if the compare-and-set of a now-waiting ride fails, the loop looks again (before, that result was ignored).
+- The accept path (`DriverService.acceptRequest`, `PoolingService.joinUnderLock`) re-reads the status when a claim fails, so the driver sees whether the passenger cancelled.
+- **A test flake found and removed:** the first version of the cancel tests packed five scenarios into one test (five database resets, about 14 logins). Under load that passed vitest's 5 s default and failed now and then. It is split into one test per state, and the round-based race tests have an explicit 30 s limit.
+
+**Problems at the moment of cancelling that are business, not races (kept, with reasons):**
+- **The driver's wasted drive:** a `MATCHED` or `DRIVER_ARRIVED` cancel costs the driver time and empty km, and they earn nothing for it. Real apps charge a fee after a grace period or once the car has arrived. We cannot collect a fee in cash from someone who never rides, so a fee needs the TeslaPay wallet first. Plan: when the car has arrived, a fee equal to the driver's ৳20 pickup pay, paid to the driver.
+- **Cancel spam:** requesting and cancelling repeatedly is not limited today (only sign-up and login are). Plan: a per-passenger limit on cancels after a match (for example 3 an hour), then a short cool-down.
+- **A freed seat is not offered to others automatically:** another waiting rider who now fits waits until a driver accepts them from the list, where they show as takeable. Release-triggered re-matching (F2) is future work.
+- **The driver's screen is up to 3 s behind:** a cancelled rider can stay on the driver's list until the next poll. An accept then gets the clear `409` above.
+
+**Tests:**
+- New: `test/cancel.e2e-spec.ts` (9): every allowed and refused state, an empty trip closing, and four races over 5 rounds each (double cancel, cancel vs accept, cancel vs pickup, cancel vs no-show).
+- The seat invariant is checked after each round.
+- All suites pass: 72 unit, 62 e2e.
