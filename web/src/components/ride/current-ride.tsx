@@ -30,7 +30,7 @@ export function CurrentRide({ ride }: { ride: Ride }) {
             <p className="text-2xl font-semibold tracking-tight">
               {ride.pickup.name} → {ride.dropoff.name}
             </p>
-            <p className="mt-1 text-sm text-zinc-500">
+            <p className="mt-1 text-sm text-stone-500">
               {ride.distanceKm} km · {ride.seats}{" "}
               {ride.seats === 1 ? "seat" : "seats"}
             </p>
@@ -39,7 +39,7 @@ export function CurrentRide({ ride }: { ride: Ride }) {
             <p className="text-2xl font-semibold tracking-tight">
               {taka(ride.finalFarePaisa ?? ride.estimatedFarePaisa)}
             </p>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-stone-500">
               {fareIsFinal
                 ? "Final fare · pay in cash"
                 : "Estimate · 20% off if you share any hop"}
@@ -50,10 +50,10 @@ export function CurrentRide({ ride }: { ride: Ride }) {
         <ProgressSteps status={ride.status} />
 
         {ride.route && ride.status !== "COMPLETED" && (
-          <div className="space-y-3 rounded-xl border border-zinc-200 p-4">
+          <div className="space-y-3 rounded-xl border border-stone-200 p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="text-sm font-medium">{carText(ride)}</p>
-              <p className="text-xs text-zinc-500">{ride.route.name}</p>
+              <p className="text-xs text-stone-500">{ride.route.name}</p>
             </div>
             <RouteLine
               stops={ride.route.stops}
@@ -65,9 +65,9 @@ export function CurrentRide({ ride }: { ride: Ride }) {
           </div>
         )}
 
-        <dl className="grid gap-4 border-t border-zinc-100 pt-5 text-sm sm:grid-cols-2">
+        <dl className="grid gap-4 border-t border-stone-100 pt-5 text-sm sm:grid-cols-2">
           <div>
-            <dt className="text-zinc-500">Driver</dt>
+            <dt className="text-stone-500">Driver</dt>
             <dd className="mt-0.5 font-medium">
               {ride.driver
                 ? `${ride.driver.name} · ${ride.driver.vehicleName}`
@@ -75,7 +75,7 @@ export function CurrentRide({ ride }: { ride: Ride }) {
             </dd>
           </div>
           <div>
-            <dt className="text-zinc-500">Sharing with</dt>
+            <dt className="text-stone-500">Sharing with</dt>
             <dd className="mt-0.5 font-medium">
               {ride.coRiders.length > 0
                 ? ride.coRiders.join(", ")
@@ -85,14 +85,14 @@ export function CurrentRide({ ride }: { ride: Ride }) {
         </dl>
 
         <details className="text-sm">
-          <summary className="cursor-pointer text-zinc-500 hover:text-zinc-800">
+          <summary className="cursor-pointer text-stone-500 hover:text-stone-800">
             Ride history
           </summary>
           <ul className="mt-3 space-y-2">
             {ride.history.map((event, index) => (
               <li key={index} className="flex justify-between gap-4">
                 <span>{event.reason}</span>
-                <span className="shrink-0 text-zinc-400">
+                <span className="shrink-0 text-stone-400">
                   {dhakaTime(event.at)}
                 </span>
               </li>

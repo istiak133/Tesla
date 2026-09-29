@@ -46,15 +46,24 @@ export function WaitingRequests() {
           {requests.data.map((request) => (
             <li
               key={request.id}
-              className="rounded-xl border border-zinc-200 p-4"
+              className="rounded-xl border border-stone-200 p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-medium">{request.passengerName}</p>
-                  <p className="text-sm text-zinc-600">
+                  <p className="flex items-center gap-2 font-medium">
+                    {request.passengerName}
+                    {request.pickupKmAhead !== null && (
+                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+                        {request.pickupKmAhead === 0
+                          ? "at your stop"
+                          : `pickup ${request.pickupKmAhead} km ahead`}
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-sm text-stone-600">
                     {request.pickup} → {request.dropoff}
                   </p>
-                  <p className="mt-0.5 text-xs text-zinc-500">
+                  <p className="mt-0.5 text-xs text-stone-500">
                     {request.distanceKm} km · {request.seats}{" "}
                     {request.seats === 1 ? "seat" : "seats"} ·{" "}
                     {taka(request.estimatedFarePaisa)} ·{" "}
@@ -70,7 +79,7 @@ export function WaitingRequests() {
                 </Button>
               </div>
               {request.reason && (
-                <p className="mt-2 text-xs text-zinc-500">{request.reason}</p>
+                <p className="mt-2 text-xs text-stone-500">{request.reason}</p>
               )}
             </li>
           ))}

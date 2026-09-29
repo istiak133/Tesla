@@ -162,8 +162,10 @@ flowchart TD
 
 ### 4.4 Automatic Join and Driver Accept
 
-- **Automatic join:** a new request joins the **oldest** active pool that passes R1 – R4, so older trips fill first. If the vehicle is busy (lock wait over 3 s), the request just keeps waiting.
-- **Driver accept:** a driver with no active pool starts a new one on their route; the car heads to this passenger's stop. A driver with an active pool can accept only requests that pass R1 – R4. The waiting list shows the reason for every request that does not fit.
+- **Where the car is:** on a trip, the pool's current stop; between trips, the stop of `vehicles.current_zone` on the chosen route. **Approach km** is the route distance from that stop to the pickup, only for pickups at or ahead of the car.
+- **Automatic join:** a new request joins the **nearest** active pool that passes R1 – R4 (fewest approach km; on a tie, the older trip). A car that does not fit under its lock (full, passed) is skipped for the next nearest; if a vehicle is busy (lock wait over 3 s), or none fits, the request keeps waiting. Only cars already on a trip are considered.
+- **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool can accept only requests that pass R1 – R4.
+- **Waiting list order:** takeable requests waiting 5 minutes or more first (oldest first, so no one waits for ever), then the other takeable ones by nearest pickup, then the ones the driver cannot take, each with its reason. Every item shows how far ahead its pickup is.
 
 ### 4.5 Constraints
 
@@ -329,8 +331,11 @@ The three parties are paid separately (`api/src/fares/earnings.ts`, decision D-0
 
 | Rule | Detail |
 |---|---|
-| **Roles** | Each account has exactly one role: `PASSENGER` or `DRIVER`. |
-| **Vehicles** | A driver owns exactly one vehicle. Bullet's capacity is 3. |
+| **Roles** | Each account has exactly one role: `PASSENGER` or `DRIVER`, chosen first on the login and sign-up pages. Login checks the chosen type against the account. |
+| **Sign-up details** | Everyone: full name, email, a Bangladeshi mobile number (stored as `+8801XXXXXXXXX`), password (8+ characters), present and permanent address. Drivers also: an NID (10, 13 or 17 digits) **or** a passport (1–2 letters + 7–8 digits), a driving licence number, and their car's name and number plate. |
+| **One person, one account** | Email, phone, identity document, licence and plate are each unique. A driver's user, documents and car are saved together or not at all. |
+| **Not verified yet** | Phones are not verified by OTP and documents are not checked by a person; a new driver can drive at once. Both are planned (decision D-015). |
+| **Vehicles** | A driver owns exactly one vehicle, created at sign-up with 3 seats and no route or location yet. Bullet's capacity is 3. |
 | **Seats per request** | 1 to 3, never more than the vehicle's capacity. |
 | **Visibility** | A passenger sees only their own rides and fares, plus where the car is on the route. A driver sees only the members of their own pools. |
 | **Pool members** | Passengers in the same pool see each other's first name only, never fares. |
@@ -370,7 +375,7 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-03 | Tesla Pool drives six fixed routes (three lines, both directions); a ride needs a route that passes the pickup, then the destination. | [3.3](#33-routes) |
 | A-04 | A passenger can join a Tesla already on its way if it has not passed their pickup (R1 – R4). | [4.1](#41-eligibility) |
 | A-05 | Seats are freed at drop-off; the seat count covers everyone not yet dropped off. | [4.1](#41-eligibility) |
-| A-06 | A request auto-joins the oldest compatible pool; a driver can also accept compatible waiting requests. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-06 | A request auto-joins the nearest compatible running trip; a new trip starts where the car is; the driver's list is nearest first with 5-minute aging. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-07 | One active pool per driver; one active request per passenger; the route changes only between trips. | [4.5](#45-constraints) |
 | A-08 | `MATCHED` covers both "accepted" and "joined a pool". | [5.4](#54-deviation-from-the-brief) |
 | A-09 | Every passenger status change is recorded in an audit table. | [5.5](#55-audit-trail) |
@@ -386,3 +391,4 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-21 | The driver earns ৳10 per carried km + ৳20 per pickup; the platform keeps the rest of the fares. | [7.2](#72-who-gets-what-passenger-driver-platform) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
 | A-17 | Live status via polling, not WebSockets. | [9](#9-technical-assumptions) |
+| A-22 | Both account types sign up on their own; drivers give an NID or passport, a licence and their car; no OTP or document check yet. | [8](#8-users-vehicles--access) |

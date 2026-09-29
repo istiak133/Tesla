@@ -41,16 +41,16 @@ function DriverHome() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white px-5 py-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-stone-200 bg-paper px-5 py-4 shadow-sm">
         <div className="flex items-center gap-3">
           <span
-            className={`h-2.5 w-2.5 rounded-full ${vehicle.isOnline ? "bg-emerald-500" : "bg-zinc-300"}`}
+            className={`h-2.5 w-2.5 rounded-full ${vehicle.isOnline ? "bg-emerald-500" : "bg-stone-300"}`}
           />
           <div>
             <p className="font-medium">
               {vehicle.name} · {vehicle.seatCapacity} seats
             </p>
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-stone-500">
               {vehicle.isOnline
                 ? `Online on ${vehicle.route?.name ?? "no route"}`
                 : vehicle.route

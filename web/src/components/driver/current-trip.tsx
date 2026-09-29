@@ -85,7 +85,7 @@ export function CurrentTrip({ state }: { state: DriverState }) {
       <div className="space-y-5">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
               {pool.route}
             </p>
             <p className="mt-1 text-2xl font-semibold tracking-tight">
@@ -162,7 +162,7 @@ export function CurrentTrip({ state }: { state: DriverState }) {
           </div>
         )}
 
-        <ul className="divide-y divide-zinc-100 rounded-xl border border-zinc-200">
+        <ul className="divide-y divide-stone-100 rounded-xl border border-stone-200">
           {pool.passengers.map((p) => (
             <li
               key={p.rideId}
@@ -172,7 +172,7 @@ export function CurrentTrip({ state }: { state: DriverState }) {
                 <p className="flex items-center gap-2 font-medium">
                   {p.name} <StatusBadge status={p.status} />
                 </p>
-                <p className="mt-0.5 text-xs text-zinc-500">
+                <p className="mt-0.5 text-xs text-stone-500">
                   {p.pickup} → {p.dropoff} · {p.seats}{" "}
                   {p.seats === 1 ? "seat" : "seats"}
                 </p>
@@ -181,7 +181,7 @@ export function CurrentTrip({ state }: { state: DriverState }) {
                 <p className="font-medium">
                   {taka(p.finalFarePaisa ?? p.estimatedFarePaisa)}
                 </p>
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-stone-500">
                   {p.finalFarePaisa === null ? "estimate" : "cash, paid"}
                 </p>
               </div>
@@ -260,13 +260,13 @@ function SeatMeter({ taken, capacity }: { taken: number; capacity: number }) {
             key={index}
             className={`h-6 w-6 rounded-md border ${
               index < taken
-                ? "border-zinc-900 bg-zinc-900"
-                : "border-zinc-300 bg-white"
+                ? "border-stone-900 bg-stone-900"
+                : "border-stone-300 bg-paper"
             }`}
           />
         ))}
       </div>
-      <p className="mt-1 text-xs text-zinc-500">
+      <p className="mt-1 text-xs text-stone-500">
         {taken} of {capacity} seats taken
       </p>
     </div>

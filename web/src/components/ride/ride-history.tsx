@@ -21,7 +21,7 @@ export function RideHistory() {
         <EmptyState title="No rides yet" hint="Your trips will appear here." />
       )}
       {history.data && history.data.length > 0 && (
-        <ul className="divide-y divide-zinc-100">
+        <ul className="divide-y divide-stone-100">
           {history.data.map((ride) => (
             <li
               key={ride.id}
@@ -31,7 +31,7 @@ export function RideHistory() {
                 <p className="font-medium">
                   {ride.pickup} → {ride.dropoff}
                 </p>
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-stone-500">
                   {dhakaTime(ride.createdAt)} · {ride.seats}{" "}
                   {ride.seats === 1 ? "seat" : "seats"}
                 </p>

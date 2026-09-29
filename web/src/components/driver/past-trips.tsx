@@ -26,7 +26,7 @@ export function PastTrips() {
       title="Past trips"
       action={
         earned > 0 ? (
-          <p className="text-sm text-zinc-600">
+          <p className="text-sm text-stone-600">
             Earned <span className="font-medium">{taka(earned)}</span> ·
             platform fee owed {taka(fees)}
           </p>
@@ -42,13 +42,13 @@ export function PastTrips() {
         />
       )}
       {trips.data && trips.data.length > 0 && (
-        <ul className="divide-y divide-zinc-100">
+        <ul className="divide-y divide-stone-100">
           {trips.data.map((trip) => (
             <li key={trip.id} className="py-3 text-sm">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="font-medium">{trip.route}</p>
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-stone-500">
                     {trip.endedAt ? dhakaTime(trip.endedAt) : "—"} ·{" "}
                     {trip.passengers.length > 0
                       ? trip.passengers
@@ -63,7 +63,7 @@ export function PastTrips() {
                       <p className="font-medium">
                         You earned {taka(trip.driverEarningsPaisa)}
                       </p>
-                      <p className="text-xs text-zinc-500">
+                      <p className="text-xs text-stone-500">
                         {taka(trip.collectedPaisa ?? 0)} cash · platform fee{" "}
                         {taka(trip.platformFeePaisa ?? 0)}
                       </p>

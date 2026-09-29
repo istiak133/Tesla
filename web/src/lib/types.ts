@@ -13,6 +13,8 @@ export type RideStatus =
 
 export type User = { id: string; name: string; email: string; role: Role };
 
+export type IdDocumentType = "NID" | "PASSPORT";
+
 export type Zone = { id: string; code: string; name: string };
 
 export type Route = {
@@ -64,6 +66,7 @@ export type WaitingRequest = {
   distanceKm: number;
   estimatedFarePaisa: number;
   requestedAt: string;
+  pickupKmAhead: number | null; // how far the car drives to the pickup; null: not reachable
   canAccept: boolean;
   reason: string | null;
 };

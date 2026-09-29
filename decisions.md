@@ -57,7 +57,7 @@ Details and reasoning for each entry are further down in this file.
 | Merge flow | PR + manual merge | PR + auto-merge on green CI (`api`, `web`, `docker` required) | Implemented |
 | Geography | 3 routes, ordered stops, 2 km per hop → 14 zones + km table only (D-003) | 14 zones + symmetric km table **and** 3 fixed lines driven both ways = 6 routes with ordered stops (D-008) | Implemented (`routes`, `route_stops`, seed, `GET /zones`, `GET /routes`) |
 | Matching rule | Same route and direction, pickup ahead of the vehicle → M1–M4 same pickup zone + detour ≤ 2 km (D-003) | R1–R4: on the pool's route in its direction, the car has not passed the pickup, seats free, pool active (D-008) | Implemented (`pooling/route-plan.ts`, checked under the lock in `PoolingService.joinUnderLock`) |
-| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the oldest compatible open pool (best effort: under contention the ride keeps waiting); the driver can also accept compatible waiting requests | Implemented |
+| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the nearest compatible running trip, older trip on a tie (D-014; was the oldest pool); best effort: under contention the ride keeps waiting; the driver can also accept compatible waiting requests, and a new trip starts where the car is | Implemented |
 | Joins after start | Allowed from stops ahead (option C) → deferred (D-003) | Allowed from any stop ahead until the seats are full; seats freed at drop-off (D-008) | Implemented (tested: join on the way, passed stop refused, depart vs join race) |
 | Status model | Per-passenger states → one shared set for the whole pool (D-003) | Same status names, per passenger: MATCHED → DRIVER_ARRIVED (car at their stop) → STARTED (on board) → COMPLETED (dropped off); pool status + `current_stop` say where the car is (D-008) | Implemented (`TripService`: arrive, pickup, dropoff, no-show, depart, cancel) |
 | Fare | ৳30 + ৳20 per hop, locked at request → −20% if 2+ passengers at STARTED, locked at STARTED (D-003) | (৳30 + direct km × ৳15) × seats; −20% if another passenger shared at least one hop; estimate = solo price (never exceeded); locked at drop-off (D-008) | Implemented (tested ৳60 / ৳72 / ৳108 shared, ৳75 alone, ৳75 when a seat is only handed over) |
@@ -684,3 +684,130 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 
 **Verified:** locally through the web proxy, 5 × 401 then 429. Live check after deploy, then released as v1.0.1 (a patch release on `release/v1.0.1`).
 
+
+
+---
+
+# Matching
+
+## D-014: Matching a request to a car by where the car is (2026-09-29)
+
+**Context (his request: optimisation matters for this system).** A code check found that the driver's location was only used by the route suggestion, not by matching:
+- **New trips ignored the car.** An idle driver could accept any request on the route, and the trip started at the passenger's stop. Example: Jashim finished at Bashundhara, accepted a request at Uttara, and the system assumed the car was at Uttara. In reality it had to drive 24 km empty, backwards, unpaid.
+- **Auto-join took the oldest trip, not the nearest car.** With two cars on one route, one a stop before the pickup and one four stops before, the older trip won and the rider waited longer.
+- **The driver's list was only by time.** It did not show which pickups were near.
+
+**Research.** This is the dial-a-ride / pickup-and-delivery problem: assign requests to vehicles so that waiting, detour and empty km are small.
+- Greedy matching (one request at a time, as here) is simple and fast.
+- Large platforms batch requests for a few seconds and match many to many (Uber/Lyft shared rides).
+- Alonso-Mora et al., PNAS 2017, "On-demand high-capacity ride-sharing via dynamic trip-vehicle assignment", builds a graph of which requests can share which vehicles in which order and solves the assignment as an optimisation, for thousands of vehicles.
+- Real systems add GPS-based ETAs and spatial indexes (e.g. H3 cells) to find nearby cars quickly.
+
+**Plan in three stages (his call: build stage 1 now).**
+1. **Now (this decision):** use the car's position in every match, with the route km we already store.
+2. **v1.1.0:** batch matching with a score (approach km, detour, empty km), offering requests to idle cars, request expiry, seats per stretch.
+3. **At scale:** GPS and ETAs, H3, and optimisation-based assignment.
+
+**What is built (stage 1).** Pure rules in `api/src/pooling/matching.ts`, used by `PoolingService.tryAutoJoin` and `DriverService`.
+- **Where the car is:**
+  - On a trip: the pool's `current_stop` (where it stands, or the next stop it drives to).
+  - Between trips: the stop of `vehicles.current_zone` on the chosen route.
+- **Approach km** = `km_from_start[pickup] − km_from_start[car]`, only for pickups at or ahead of the car (a car never drives backwards).
+- **A. New trips start at the car.**
+  - `newTripStart` makes the pool's `current_stop` the car's stop, so the car drives stop by stop to the pickup and can take others on the way.
+  - It refuses "Behind your car (…)" when the pickup is behind, and "Your car is not on this route: set your location first" when the car is not on the route or its place is unknown.
+  - `chooseRoute` also refuses a route that does not pass the car's zone.
+  - The empty stretch to the first pickup is not paid (earnings count only km with a passenger on board), as on most platforms.
+- **B. Auto-join, nearest car first.**
+  - `rankJoinCandidates` orders the running trips whose route passes the pickup by approach km, with the older trip on a tie.
+  - Trips whose car has passed the pickup, or whose route cannot carry the trip, are left out.
+  - This only changes the order of attempts. Each seat is still taken under that car's lock with R1–R4 re-checked, so the concurrency guarantees are unchanged.
+- **C. The driver's list, best first** (`orderWaitingList`):
+  1. Takeable requests waiting ≥ 5 minutes, oldest first. This is the aging rule: nobody is pushed down for ever by nearer ones.
+  2. Other takeable requests, nearest pickup first, then oldest.
+  3. Requests the driver cannot take, oldest first, each with its reason.
+  - Each item carries `pickupKmAhead`; the web shows "pickup 3 km ahead" or "at your stop".
+
+**Options considered:**
+- Oldest-first everywhere (before): fair, but slower pickups and empty backward drives. Replaced.
+- Nearest-first with no aging: fastest pickups, but a far request could wait for ever. Aging added.
+- Batch or optimisation matching now: better globally, but a scheduler, offers with timeouts and new race cases. Staged for v1.1.0 and later.
+
+**Known limit found while testing.** Auto-join only considers cars already on a trip. An idle car right at the pickup does not get the rider automatically; it sees the request at the top of its list, with "at your stop". Offering requests to idle cars is stage 2.
+
+**Tests:**
+- Unit, `matching.spec.ts` (12): the car's stop, approach km, new-trip start and its refusals, nearest-first with the tie rule, passed cars left out, list order with aging.
+- Integration, `matching.e2e-spec.ts` (5):
+  - a trip starts at Banani for a Mohakhali rider and earns ৳50 of ৳75 (the empty 3 km is unpaid)
+  - a pickup behind the car is refused
+  - the route must pass the car
+  - Rahim's car at Banani wins auto-join over Jashim's older trip 12 km away
+  - the list order is Nusrat (0 km), Rafiq (3 km), Shirin (behind)
+- All earlier tests still pass: 67 unit, 45 e2e.
+
+---
+
+# Accounts
+
+## D-015: Separate sign-up and login for passengers and drivers (2026-09-29)
+
+**Context (his request).** Until now only passengers could sign up, with just name, email and password; drivers existed only in the seed. He wants both types of user, chosen first with two buttons on both login and sign-up, and the details real ride apps ask for. Drivers also give an identity document, NID **or** passport, their choice.
+
+**Decision:**
+- **Account type first.** The login and sign-up pages start with two cards, Passenger and Driver. The form appears after the choice, with a "Change" link.
+- **Two sign-up endpoints:**
+  - `POST /auth/signup/passenger`: name, email, mobile, password, present and permanent address.
+  - `POST /auth/signup/driver`: the same, plus `idType` (NID | PASSPORT) and `idNumber`, `licenceNumber`, `vehicleName` and `plateNumber`.
+  - The endpoint decides the role; a `role` field in the body is refused (whitelisting `ValidationPipe`).
+- **Where the data lives:**
+  - Contact details on `users`: `phone` unique, plus both addresses.
+  - Driver-only data in a new `driver_profiles` table (1:1 with the user): document type and number, licence. The `users` table does not fill up with columns that are empty for every passenger.
+  - The plate on `vehicles`.
+  - The driver's user, profile and car are one nested insert, so one transaction.
+  - The car gets 3 seats, no route and no location. The driver sets those on the driver page, as before.
+- **One stored form for each value** (`auth/identity.ts`, applied by `@Transform` before validation):
+  - Phones: `01712-345678`, `+880 1712 345678` → `+8801712345678`.
+  - Documents and licences: no spaces or dashes, in capitals.
+  - Plates: single spaces, in capitals.
+  - Names and addresses: trimmed.
+  - Without this, "the same phone written two ways" would pass the unique index.
+- **Formats checked twice:**
+  - In the DTO, with a message for people.
+  - Again by CHECK constraints in the migration: phone format, NID 10/13/17 digits or passport letters + digits matching the chosen type, licence and plate in capitals.
+- **Duplicates:**
+  - Email, phone, (document type, number), licence and plate are unique.
+  - The service checks them first to give a precise `409 ALREADY_REGISTERED` with the `field`.
+  - Two sign-ups racing past the check are still stopped by the unique indexes (generic 409).
+- **Login with the type:**
+  - `role` is required.
+  - Wrong email or password → the same `401 Invalid email or password` as before.
+  - Right password but the other type → `401 WRONG_ACCOUNT_TYPE` ("This is a driver account: choose Driver to log in"), and no session is created. This only tells the type to someone who already has the password, so it gives nothing away. The page offers "Log in as driver instead" in one tap.
+- **Old accounts:** the new columns are nullable, so accounts created before this (for example on the live database) keep working. The demo cast is seeded with full details.
+
+**Options considered:**
+- One `/auth/signup` with a `role` field: fewer endpoints, but the client picks its own role and every field becomes "required only if driver". Refused.
+- Driver fields as nullable columns on `users`: simpler, but mostly empty columns and no clean place for later verification status. Refused for `driver_profiles`.
+- Login without the type, with the type used only to pick the home page: fewer errors, but it ignores the button he asked for. The type is checked, and the switch is offered.
+
+**Planned next (his list, not built now):**
+- **Phone OTP:** a 6-digit SMS code, stored hashed, 5-minute expiry, 5 tries, then `phone_verified_at`. Needed before requesting rides or going online.
+- **JWT:** keep cookie sessions for the web. For mobile apps, a 15-minute access JWT plus a rotating refresh token stored hashed, so revocation keeps working.
+- **Google OAuth:** OpenID Connect ID token → an `auth_identities` (provider, subject) link by verified email. Then ask only for what Google does not give (phone, address, the driver's documents).
+- **Document verification:** `verification_status` on `driver_profiles`, document photos in object storage, an admin screen. Going online is allowed only when approved.
+
+**UI touch-up (same change, his request: simple and classy):**
+- A cream page (`#f5efe3`) with warm paper cards and warm grey (stone) text.
+- A near-black header with 🛺 and the name set in a serif, with a thin gold line under it.
+- A quiet footer on every page. Mobile checked at 390 px.
+
+**Tests:**
+- Unit, `identity.spec.ts` (5): every phone form, operator digits, NID and passport formats, licences and plates, tidy text.
+- Integration, `auth.e2e-spec.ts` (13):
+  - passenger sign-up with every field stored normalised
+  - a duplicate email or phone written differently is refused
+  - bad input is refused, and role or driver fields cannot be sent to the passenger endpoint
+  - driver sign-up with NID, then with passport
+  - a document number must fit the chosen type
+  - a duplicate document, licence or plate is refused with nothing half made, and the index holds without the service
+  - a new driver sets location and route, goes online and accepts a real ride
+  - login with the right type; the same answer for a wrong password and an unknown email; `WRONG_ACCOUNT_TYPE` only after the password, with no cookie; the type is required
