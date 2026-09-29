@@ -307,7 +307,9 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 
 ## Deployment
 
-**Live demo:** *URL added after the first deploy.* Free tiers: the API may take 30 to 60 seconds to wake up on the first request.
+**Live demo:** **https://tesla-pool-one.vercel.app** (log in with a demo account below). API: `https://tesla-pool-api.onrender.com/health`.
+
+Free tiers: after 15 idle minutes the API sleeps, so the first request can take 30 to 60 seconds. Open the health link once to wake it before a demo.
 
 | Part | Service | Settings |
 |---|---|---|

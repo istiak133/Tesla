@@ -654,3 +654,20 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - the next suggestion from Bashundhara, logout
 
 **Verified live:** the same story through the browser → Next.js proxy → API → PostgreSQL in Docker (`docker compose up --build`). The database then held one COMPLETED pool with 24000 / 18000 / 6000 paisa and the car at Bashundhara.
+
+## D-012: Area circles and express links, planned for v1.1.0 (2026-09-29)
+
+**His idea:** small circular routes inside each area with nearby stops (e.g. Banani → Gulshan 2 → Gulshan 1 → Mohakhali → Banani), so no route has long hops like Uttara → Banani.
+
+**Analysis before deciding:** four circle designs were computed on the current 14-zone table with the route-fit rule. Circles alone do not raise coverage: one city ring served 70 of 182 zone pairs, three area circles 70, versus 72 for today's lines. Coverage is limited by "not too far round", not by the shape. It rises only with more routes (a ring + three circles: 90 of 182) or with transfers. The real gain of circles is operational: a car never ends empty at the end of a line, and it keeps circulating and picking people up.
+
+**Decision (his calls):**
+- Circles inside each area plus a few express links between neighbouring areas, so every area stays reachable.
+- Smaller zones (about 30), with distances from approximate map coordinates: straight-line km × 1.3, rounded, then corrected so the triangle rule always holds.
+- **Release v1.0.0 first** with today's tested routes, and build circles as v1.1.0. This keeps the deadline safe.
+
+**What changes in v1.1.0:**
+- Positions on a circle wrap around. A pool's `current_stop` keeps growing, and stops are `position mod length`.
+- R1/R2, depart (there is no last stop), the suggestion and the earnings proof are all re-done.
+- The seed, the story fares, the docs and the diagrams are updated to the new distances.
+
