@@ -1,5 +1,7 @@
 # Database Design (ERD)
 
+> Ride, pool and membership tables below are updated when those features are built (see the Decision Status table in `decisions.md`).
+
 PostgreSQL. Money is stored as integer paisa. Times are `timestamptz` (UTC). Primary keys are UUIDs.
 Columns marked *(planned)* are added by their own migration when that feature is built.
 
@@ -8,11 +10,10 @@ erDiagram
     users ||--o{ sessions : has
     users ||--o| vehicles : drives
     users ||--o{ ride_requests : makes
-    areas ||--o{ route_stops : "appears in"
-    routes ||--o{ route_stops : "ordered stops"
-    areas ||--o{ ride_requests : "pickup / dropoff"
+    zones ||--o{ zone_distances : "distance from / to"
+    zones ||--o{ ride_requests : "pickup / dropoff"
     vehicles ||--o{ pools : runs
-    routes ||--o{ pools : follows
+    zones ||--o{ pools : "pickup zone"
     pools ||--o{ pool_members : contains
     ride_requests ||--o{ pool_members : "joins over time"
     ride_requests ||--o{ ride_request_events : history
@@ -41,20 +42,15 @@ erDiagram
         bool is_online
         timestamptz created_at
     }
-    areas {
+    zones {
         uuid id PK
-        text name "unique"
-        float lat
-        float lng
+        text code "unique, e.g. BAN"
+        text name "unique, e.g. Banani"
     }
-    routes {
-        uuid id PK
-        text name
-    }
-    route_stops {
-        uuid route_id PK, FK
-        int stop_index PK
-        uuid area_id FK
+    zone_distances {
+        uuid from_zone_id PK, FK
+        uuid to_zone_id PK, FK
+        int km "CHECK > 0, CHECK from <> to"
     }
     ride_requests {
         uuid id PK
@@ -125,8 +121,8 @@ erDiagram
 | `users` | Passengers and drivers in one table with a `role`; both sign in the same way. |
 | `sessions` | Server-side login sessions; only a SHA-256 hash of the token is stored; logout deletes the row. |
 | `vehicles` | A driver's vehicle (Bullet, 3 seats). Also the **lock row** for all seat and pool changes. `is_online` lives here so availability changes under the same lock. |
-| `areas` | Predefined Dhaka areas; lat/long are for display only. |
-| `routes`, `route_stops` | Ordered stops per route; adjacent stops are one hop (2 km). Direction comes from index order. |
+| `zones` | The 14 predefined Dhaka zones (docs/assumptions.md §3.1). |
+| `zone_distances` | Whole-kilometre road distance for every ordered pair of different zones, stored in both directions so a lookup is one row. |
 | `ride_requests` | One passenger's request and its lifecycle. The fare is calculated and locked here at creation. |
 | `pools` | One trip of one vehicle along one route and direction. Holds the seat counter that the CHECK constraint protects. |
 | `pool_members` | Which request is (or was) in which pool, with the seats taken and pickup/dropoff stops. A request can have several rows over time (e.g. rejected, then accepted elsewhere). |
@@ -148,7 +144,8 @@ Not included on purpose: payments (cash only), ratings (optional in the PRD).
 | Partial unique | `ride_requests(passenger_id) WHERE status IN (REQUESTED, HELD, MATCHED, IN_PROGRESS)` | I5 one active request |
 | Partial unique | `pools(vehicle_id) WHERE status IN (ACCEPTED, DRIVER_ARRIVED, STARTED)` | I4 one active pool |
 | Partial unique | `pool_members(ride_request_id) WHERE status IN (HELD, ACTIVE)` | I2 one active membership |
-| Unique | `route_stops(route_id, area_id)` | an area appears once per route |
+| CHECK | `zone_distances.km > 0`, `from_zone_id <> to_zone_id` | valid distances |
+| Unique | `zones.code`, `zones.name` | one row per zone |
 | Index | `ride_requests(status, created_at)` | driver's waiting-request list |
 | Index | `pool_members(pool_id, status)` | pool passenger list |
 | Index | `ride_request_events(ride_request_id, created_at)`, `pool_events(pool_id, created_at)` | history timelines |

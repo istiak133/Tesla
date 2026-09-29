@@ -10,6 +10,7 @@ import {
 } from './config/env.validation.js';
 import { buildLoggerParams } from './config/logger.config.js';
 import { DatabaseModule } from './database/database.module.js';
+import { GeographyModule } from './geography/geography.module.js';
 import { HealthModule } from './health/health.module.js';
 import { UsersModule } from './users/users.module.js';
 
@@ -41,6 +42,7 @@ import { UsersModule } from './users/users.module.js';
     HealthModule,
     UsersModule,
     AuthModule,
+    GeographyModule,
   ],
 })
 export class AppModule {}

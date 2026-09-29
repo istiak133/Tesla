@@ -41,6 +41,37 @@ Every significant decision made during this project, with context and reasoning.
 
 ---
 
+# Decision Status (read this first)
+
+Every major decision, what it was at first, what it is now, and whether it is in the code.
+**Implemented** = in `master` · **In progress** = being built · **Planned** = MVP scope, not built yet · **Deferred** = after submission.
+Details and reasoning for each entry are further down in this file.
+
+| Area | Earlier decision | Final decision | Status |
+|---|---|---|---|
+| Backend framework | Fastify (proposed) | NestJS | Implemented |
+| ORM | Drizzle (proposed) | Prisma 7 + raw SQL only where needed | Implemented |
+| Tests / lint | Jest + ESLint | Vitest + Supertest, oxlint (NestJS 12 defaults) | Implemented |
+| Auth | JWT + cookie (proposed) | Database sessions, token hash, httpOnly cookie via Next.js proxy | Implemented |
+| Email uniqueness | Unique index on `lower(email)` | App lower-cases + unique + `CHECK (email = lower(email))` | Implemented |
+| Merge flow | PR + manual merge | PR + auto-merge on green CI (`api`, `web`, `docker` required) | Implemented |
+| Geography | 3 routes, ordered stops, 2 km per hop | 14 zones + symmetric km distance table (from `docs/assumptions.md`) | Implemented (`zones`, `zone_distances`, seed, `GET /zones`) |
+| Matching rule | Same route and direction, pickup ahead of the vehicle | M1–M4: same pickup zone, pool open, seats free, every member's detour ≤ 2 km (drop-offs nearest first) | Planned |
+| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the oldest compatible open pool; the driver can also accept compatible waiting requests | Planned |
+| Joins after start | Allowed from stops ahead (option C) | Not in the MVP: a pool is closed once STARTED | Deferred |
+| Status model | Separate pool and per-passenger states (IN_PROGRESS, per-passenger drop-off) | One shared set: REQUESTED → MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED, + CANCELLED; driver actions apply to the whole pool | Planned |
+| Fare | ৳30 + ৳20 per hop, passenger picks SHARED (−20%) or SOLO, locked at request | (৳30 + km × ৳15) × seats; −20% if the pool has 2+ passengers at STARTED; estimate = solo price (never exceeded); locked at STARTED | In progress (fare rules and detour rules implemented as tested pure functions; applied at STARTED with pooling) |
+| Ride types | SHARED / SOLO chosen by the passenger | No ride type; every ride can be pooled | Planned |
+| Money storage | Integer paisa | Integer paisa (unchanged) | In progress |
+| Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status | Planned |
+| Idempotency key (double tap) | E6 + G11 | Kept as a design, not built for the MVP | Deferred |
+| Seat hold, request expiry, no-show | E1, Y, E7 | Kept as designs, not built for the MVP | Deferred |
+| Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger before STARTED; empty pool auto-cancels; driver before start → riders back to REQUESTED | Planned |
+| Payment | Cash only | Cash only (unchanged) | Planned |
+| Hosting | Vercel + Render/Koyeb + Neon | Unchanged (re-check free tiers at deploy time) | Planned |
+
+---
+
 # PRD Walkthrough Notes
 
 Gist and decision points extracted from each PRD section. Open points are resolved in later D-entries.
@@ -469,3 +500,21 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 
 ### D-002 update (2026-09-28): auto-merge on green CI
 - [x] Manual merge replaced by GitHub auto-merge (his call). Each PR gets auto-merge enabled with the merge-commit method once it is ready; it merges by itself when the required checks `api`, `web` and `docker` pass and the branch is up to date with master. Squash and rebase stay disabled. Auto-merge is enabled by the account owner (not by a bot token), so merges stay attributed to Istiak Ahmed and the master push still triggers CI.
+
+
+---
+
+## D-003: Adopt zones, matching and fare rules from docs/assumptions.md (2026-09-29)
+
+**Context:** With the deadline close, the route-based geography, en-route joins (option C), per-passenger states and passenger-chosen ride types would take too long to build and test. `docs/assumptions.md` describes a simpler model that still meets every PRD requirement and keeps fares hand-checkable.
+
+**Decision (his call on both open points):**
+- Geography: 14 fixed zones and a symmetric whole-kilometre distance table.
+- Matching: M1–M4 (same pickup zone, open pool, free seats, detour ≤ 2 km for every member, drop-offs nearest first).
+- Joining: auto-join into the oldest compatible open pool; drivers can also accept compatible waiting requests (option (a)).
+- Fare: (৳30 + km × ৳15) × seats; 20% pool discount only if 2+ passengers are in the pool at STARTED; the estimate shown at request time is the solo fare; the final fare is locked at STARTED (option (a)).
+- Status: one shared state set for pools and requests.
+
+**Superseded:** routes and hops (B1), option C, option Y and driver confirmation of every join, SHARED/SOLO ride types (P3.12 revision), Fare A (locked at request), per-passenger IN_PROGRESS and drop-off (E4).
+
+**Consequences:** Less code and fewer states; the PRD's last-seat race happens at auto-join time and is still protected by the vehicle lock and CHECK constraint. Deferred items are documented as next improvements.

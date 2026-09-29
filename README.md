@@ -23,6 +23,7 @@ explain afterwards exactly what happened.
 
 - Passenger sign-up, login and logout with server-side sessions in an httpOnly cookie
 - Role-based access (passenger / driver) and rate-limited login
+- 14 Dhaka zones with a whole-kilometre distance table, and the fare and detour rules (unit-tested with the PRD examples)
 - Seed data with the story cast (Jashim the driver, Nusrat, Rafiq, Shirin)
 - Health endpoint with a real database check (`GET /health`)
 - Structured JSON logging with a request id per request
@@ -120,7 +121,7 @@ Stop with `docker compose down` (add `-v` to delete the database volume).
 
 Migrations run automatically when the API container starts (`prisma migrate deploy`).
 Outside Docker: `cd api && npm run prisma:deploy`.
-The API container also upserts the story cast on start (safe to repeat).
+The API container also upserts the zones, distances and story cast on start (safe to repeat).
 Outside Docker: `cd api && npm run build && npm run db:seed`.
 
 ## Run without Docker
@@ -172,10 +173,22 @@ All demo accounts use the password **`tesla1234`** (local and demo use only).
 | POST | `/auth/login` | Log in with email and password (sets the session cookie); 5 attempts per minute |
 | POST | `/auth/logout` | End the session and clear the cookie |
 | GET | `/auth/me` | The logged-in user |
+| GET | `/zones` | The 14 zones for pickup and destination |
 
 Through the web app every path is prefixed with `/api` (e.g. `/api/auth/login`).
 
 More endpoints are added with each feature *(coming)*.
+
+## Fare model
+
+`(৳30 + km × ৳15) × seats`, minus **20%** if the pool has two or more passengers when the trip starts. The estimate shown at request time is the solo fare, so nobody pays more than they saw. Money is stored in integer paisa.
+
+| Passenger | Trip | km | Estimate (solo) | Pooled with the other |
+|---|---|---:|---:|---:|
+| Nusrat | Banani → Mohakhali | 3 | ৳75 | ৳60 |
+| Rafiq | Banani → Gulshan 1 | 4 | ৳90 | ৳72 |
+
+Matching rules, detours and every other assumption: [`docs/assumptions.md`](docs/assumptions.md).
 
 ## Key decisions and trade-offs
 
