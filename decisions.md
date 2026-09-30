@@ -1028,6 +1028,7 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
   - A 25 s heartbeat keeps proxies from closing a quiet stream.
   - The browser opens one `EventSource` per logged-in tab. It reconnects by itself.
   - While the stream is up, polling slows to a 30 s safety net; while it is down, polling runs at the old pace (3 s, 5 s, 10 s).
+- **Measured live** (through Vercel to Render): an event arrived about 1.4 s after the action was sent, most of that the action's own round trip; the stream stayed open past the 25 s heartbeat; two drivers racing for one request gave one `200` and one `409` in 3 of 3 rounds.
 - **Measured in Docker (browser, two drivers):**
   - a new request reached both drivers' screens in 83 ms and 94 ms
   - after Jashim accepted, it left Rahim's screen in 80 ms

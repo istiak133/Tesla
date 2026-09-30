@@ -68,7 +68,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 - One-command local run with Docker Compose; CI on every pull request
 
 **🖥️ Web**
-- Next.js app for both roles, with **live updates over Server-Sent Events** (a change reaches open screens in under 0.1 s; polling only as a fallback); loading, error and empty states; a same-origin `/api` proxy (no CORS)
+- Next.js app for both roles, with **live updates over Server-Sent Events** (a change reaches open screens in under 0.1 s in Docker and about 1.4 s on the free live hosting, where most of that is the action's own round trip to the API; polling only as a fallback); loading, error and empty states; a same-origin `/api` proxy (no CORS)
 
 ## 📸 Screenshots
 
@@ -560,7 +560,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 - 🙋 **The case:** Nusrat's request fits two idle cars, and Jashim and Rahim tap Accept at the same instant.
 - 🔐 Each accept locks only its own car, so the two never wait on each other's car. Each ends with a compare-and-set `REQUESTED → MATCHED` on Nusrat's request.
 - ✅ PostgreSQL's row lock on that one request lets exactly one update through. The other sees `MATCHED`, and its whole transaction rolls back, including the empty trip it had just started. That driver gets `409 ALREADY_TAKEN` "Another driver took this request".
-- 📡 Every other screen drops the request within about 0.1 s over Server-Sent Events, so late taps are rare.
+- 📡 Every other screen drops the request over Server-Sent Events almost at once (80 ms in Docker, about 1.4 s end to end on the free live hosting), so late taps are rare.
 - 🧾 **Two passengers at the same instant:** both requests are always stored, because they are separate rows. The only contest is for the seat, settled above.
 
 **Proof**
