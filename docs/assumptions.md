@@ -274,7 +274,7 @@ Fares are locked at drop-off. If Rafiq cancels before being picked up, Nusrat ri
 
 | Rule | Detail |
 |---|---|
-| **Cancel trip** | Before the first pickup only (e.g. a breakdown). All members return to `REQUESTED`, not `CANCELLED`, so another driver can take them. |
+| **Cancel trip** | Before the first pickup only (e.g. a breakdown). All members return to `REQUESTED`, not `CANCELLED`, with no fee, and are offered again at once, oldest request first: a running car that fits seats them, otherwise idle cars that can take them see them (decision D-021). |
 | **No-show** | At the passenger's stop, the driver can mark them as not there: the ride is `CANCELLED` and the seat is freed. |
 | **Audit** | The reason is recorded in the history. |
 

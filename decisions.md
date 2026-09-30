@@ -1065,3 +1065,62 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
   - a passenger's stream hears only `rides`, and reads never publish
   - the stream needs a session
 - Six earlier tests now check the refusal on accept instead of a reason in the list.
+
+## D-021: After a driver cancels a trip, the riders are offered again at once (2026-09-30)
+
+**Context.** He asked for a last full check that the later features (D-014 to D-020) did not break the earlier ones, with the passenger and driver cancels checked first.
+
+**Found:**
+- **A gap:** when a driver cancels a trip before the first pickup, the riders go back to `REQUESTED`, but nothing offered them again.
+  - Auto-join only ran when a request was created. So a rider stayed waiting even when a running car nearby had room.
+  - That breaks the hybrid rule of D-020, where a request that fits a running car is seated automatically.
+- **A flaky test, and its real cause:** the new test for this sometimes failed.
+  - Temporary logging showed the returned riders were re-offered in whatever order the database returned them, because the query had no `ORDER BY`.
+  - A later, smaller request (Shirin, 1 seat) could take the seats an earlier one needed (Nusrat, 2 seats).
+  - The seats were always safe; only the order was random.
+
+**Decision (built):**
+- **Re-offer:** once the driver's cancel has committed, each returned rider goes through auto-join again, exactly like a new request.
+  - A running car that fits seats them at once. Otherwise every idle car that can take them sees them (D-020 broadcast).
+  - This runs **outside** the cancelling car's lock, so a transaction never holds two vehicle locks.
+- **Order:** oldest request first. This is fair, and it matches the waiting list's aging rule.
+- **Fees:** none for the riders. The driver cancelled, not them (D-018). A new seat later gets its own 2-minute grace.
+
+**Also checked in this pass, and found correct (tests added where missing):**
+- **Passenger cancel:**
+  - free while waiting and while the car is a stop or more away
+  - Tk 20 once the car is coming or at the stop, after the grace
+  - idempotent
+  - raced against a second cancel, an accept, a pickup and a no-show (D-016)
+- **Late-cancel fee:** a fee stays owed if the next ride is cancelled too, and is never charged twice. New test.
+- **No-show:** the fee applies, and the seat is refilled (D-017, D-018).
+- **Refill:** two cars freeing a seat at once, and the rider cancelling as her seat frees (D-017).
+- **Broadcast:**
+  - only takeable requests are listed
+  - two drivers accepting one request: one wins, no empty trip is left
+  - live hints (D-020)
+- **Route list and moving off a route (D-019); sign-up and login by account type (D-015); nearest-car matching (D-014).**
+- **Event history order:** `ride_events.created_at` comes from the application clock in milliseconds, so two events in one transaction still get different times, and the history reads in the right order. Checked on real rows.
+
+**Test flakes, investigated:**
+- **Once, a stop action got `401` and a later call `404` in the middle of a pooling test.**
+  - Temporary logging proved the test files never overlap: each runs in its own process, and no database reset ever falls inside another file's run.
+  - A response logger over the next runs caught no unexpected `401` or `404`.
+  - The cause is not found, and it has not come back.
+- **Once, after six full runs back to back, two race tests hit their time limit.** The machine was slower (the same file took 23 s instead of 17 s). The database had room, and every query under a lock uses the transaction's own connection, so the pool cannot starve.
+- **What changed:** the e2e tests get a 20 s limit per test instead of vitest's 5 s, because each test resets a real database and logs users in.
+- **What did not happen:** no product failure was ever seen in Docker or live.
+- **Checked later:**
+  - A start/end log per test file over four full runs showed no two files ever overlapping.
+  - No product code deletes a ride; the only delete is a session at logout. Rows that vanish in the middle of a test can therefore only come from the test helper's `TRUNCATE`.
+  - It happened about once in ten full runs, and not on demand.
+- **The proper fix, planned:** give each test file its own database schema, so no file can ever touch another's rows. It is kept for after the deadline because it changes how every test starts.
+
+**Tests:**
+- `test/driver-cancel.e2e-spec.ts` (4):
+  - back to waiting with the reason and no fee
+  - a running car that fits seats them, oldest first; the next one waits, shown to idle cars
+  - no running car: idle cars see them, and a new seat restarts the grace
+  - the passenger can still cancel for free while waiting again
+- It passed 15 of 15 runs after the order fix; before, it failed 2 times in about 12.
+- `cancel-fee.e2e-spec.ts` (+1): the fee stays owed through a cancelled next ride.

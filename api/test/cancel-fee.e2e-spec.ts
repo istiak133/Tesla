@@ -137,6 +137,28 @@ describe('Late-cancel fee (e2e)', () => {
     });
   });
 
+  it('the fee stays owed if her next ride is cancelled too, and is not charged twice', async () => {
+    const { jashim, nusrat, rafiqRideId, nusratRideId } = await nusratAhead();
+    await leaveForMohakhali(jashim, rafiqRideId);
+    await seatedMinutesAgo(nusratRideId, 5);
+    await nusrat.post(cancel(nusratRideId)).expect(200); // Tk 20 owed
+
+    // She asks again and cancels while still waiting: free, and the old Tk 20 is still owed.
+    const next = await nusrat
+      .post('/rides')
+      .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 });
+    expect(next.body.duesPaisa).toBe(2000);
+    const dropped = await nusrat.post(cancel(next.body.id));
+    expect(dropped.body).toMatchObject({
+      status: 'CANCELLED',
+      cancellationFeePaisa: 0,
+    });
+    const third = await nusrat
+      .post('/rides')
+      .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 });
+    expect(third.body.duesPaisa).toBe(2000); // still Tk 20, not Tk 40
+  });
+
   it('the fee is paid in cash with her next ride, and each driver sees their side', async () => {
     const { jashim, nusrat, rafiqRideId, nusratRideId } = await nusratAhead();
     await leaveForMohakhali(jashim, rafiqRideId);
