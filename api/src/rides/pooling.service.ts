@@ -267,10 +267,14 @@ export class PoolingService {
    * Best effort, like auto-join: it runs inside a savepoint, so if anything goes wrong
    * the cancel or drop-off that freed the seat still succeeds and the riders keep waiting.
    */
-  async fillFreedSeats(tx: Tx, poolId: string): Promise<void> {
+  async fillFreedSeats(
+    tx: Tx,
+    poolId: string,
+    reason = 'A seat came free in a Tesla on the way: joined automatically',
+  ): Promise<void> {
     await tx.$executeRawUnsafe('SAVEPOINT fill_freed_seats');
     try {
-      await this.seatWaitingRiders(tx, poolId);
+      await this.seatWaitingRiders(tx, poolId, reason);
       await tx.$executeRawUnsafe('RELEASE SAVEPOINT fill_freed_seats');
     } catch (error) {
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT fill_freed_seats');
@@ -281,7 +285,47 @@ export class PoolingService {
     }
   }
 
-  private async seatWaitingRiders(tx: Tx, poolId: string): Promise<void> {
+  /**
+   * A driver just accepted a request (D-022): riders who were already waiting and fit this
+   * car's trip get a seat now, exactly as if they had asked after the trip started. Only the
+   * first passenger of a trip goes through the driver; everyone after that is seated by the
+   * system.
+   *
+   * Runs after the accept has committed, in its own transaction under the car's lock.
+   * Inside the accept it would miss a request saved while the accept was still committing:
+   * that request's own auto-join cannot see the new trip yet. Run after the commit, one of
+   * the two always sees the other.
+   *
+   * Best effort, like auto-join: if the car is busy, the riders keep waiting and stay in
+   * the driver's list.
+   */
+  async fillTrip(vehicleId: string): Promise<void> {
+    try {
+      await this.ridesRepository.withVehicleLock(vehicleId, async (tx) => {
+        const pool = await tx.pool.findFirst({
+          where: { vehicleId, status: { in: ACTIVE_POOL_STATUSES } },
+        });
+        if (pool !== null) {
+          await this.fillFreedSeats(
+            tx,
+            pool.id,
+            'Joined a Tesla on the way automatically',
+          );
+        }
+      });
+    } catch (error) {
+      if (error instanceof RideError && error.code === 'BUSY') {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async seatWaitingRiders(
+    tx: Tx,
+    poolId: string,
+    reason: string,
+  ): Promise<void> {
     let pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
     const vehicle = await tx.vehicle.findUniqueOrThrow({
       where: { id: pool.vehicleId },
@@ -323,13 +367,7 @@ export class PoolingService {
       if (joinProblem(pool, stops, candidate.ride) !== null) {
         continue;
       }
-      await this.joinUnderLock(
-        tx,
-        pool,
-        candidate.ride,
-        null,
-        'A seat came free in a Tesla on the way: joined automatically',
-      );
+      await this.joinUnderLock(tx, pool, candidate.ride, null, reason);
       pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
       if (pool.seatsTaken >= pool.seatCapacity) {
         return;
