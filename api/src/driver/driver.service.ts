@@ -337,6 +337,8 @@ export class DriverService {
       );
     });
 
+    // Riders already waiting who fit this trip are seated now, not left for another tap.
+    await this.poolingService.fillTrip(vehicle.id);
     return this.getCurrentPool(driverId);
   }
 
