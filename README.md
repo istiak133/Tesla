@@ -5,6 +5,7 @@
 A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-seat **Bullet**, and passengers **Nusrat**, **Rafiq** and **Shirin**.
 
 - 🌐 **Live demo:** https://tesla-pool-one.vercel.app (choose Passenger or Driver, then a one-click demo account)
+- 🎬 **Demo video:** https://www.youtube.com/watch?v=eTIudjhgNjY
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
 - 🧪 **Quality:** 77 unit and 88 end-to-end tests against PostgreSQL, CI on every pull request
 
@@ -720,4 +721,4 @@ flowchart LR
 
 ## 🎬 Demo video
 
-- 🎥 *Link added at release.*
+- 🎥 **Watch:** https://www.youtube.com/watch?v=eTIudjhgNjY
