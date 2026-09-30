@@ -136,6 +136,95 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
     expect((await rahim.get('/driver/requests')).body).toHaveLength(0);
   });
 
+  // D-022: only a trip's first passenger goes through a driver; after the accept, riders
+  // who were already waiting and fit the new trip are seated by the system.
+  describe('after the first accept, the system seats the rest', () => {
+    it('two first passengers at once: the driver accepts one, the other is seated in that trip', async () => {
+      const { jashim, rahim } = await twoIdleDrivers();
+      const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+      const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+      const [nusratRide, rafiqRide] = await Promise.all([
+        nusrat.post('/rides').send(trip(BAN, MOH)),
+        rafiq.post('/rides').send(trip(BAN, GL1)),
+      ]);
+      // No trip yet: both are first passengers, so both go to both drivers.
+      expect([nusratRide.body.status, rafiqRide.body.status]).toEqual([
+        'REQUESTED',
+        'REQUESTED',
+      ]);
+      expect((await jashim.get('/driver/requests')).body).toHaveLength(2);
+
+      await jashim
+        .post(`/driver/requests/${nusratRide.body.id}/accept`)
+        .expect(200);
+
+      // Rafiq did not wait for a second tap: he is in Jashim's car, sharing with Nusrat.
+      const rafiqNow = (await rafiq.get('/rides/current')).body.ride;
+      expect(rafiqNow.status).toBe('MATCHED');
+      expect(rafiqNow.driver.name).toBe('Jashim');
+      expect(rafiqNow.coRiders).toEqual(['Nusrat']);
+      expect((await jashim.get('/driver/requests')).body).toEqual([]);
+      expect((await rahim.get('/driver/requests')).body).toEqual([]);
+      const event = await prisma.rideEvent.findFirstOrThrow({
+        where: { rideRequestId: rafiqRide.body.id, toStatus: 'MATCHED' },
+      });
+      expect(event.actorUserId).toBeNull(); // the system, not a driver
+      expect(event.reason).toBe('Joined a Tesla on the way automatically');
+    });
+
+    it('a rider who does not fit the new trip keeps waiting for a driver', async () => {
+      const { jashim } = await twoIdleDrivers();
+      const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+      const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+      const shirin = await loginAs(app, 'shirin@teslapool.test');
+      const nusratRide = await nusrat.post('/rides').send(trip(BAN, MOH, 2));
+      await rafiq.post('/rides').send(trip(BAN, GL1, 2)); // 2 seats: only 1 left after Nusrat
+      await shirin.post('/rides').send(trip(MOH, GL2)); // 1 seat, a stop ahead: fits
+
+      await jashim
+        .post(`/driver/requests/${nusratRide.body.id}/accept`)
+        .expect(200);
+
+      expect((await shirin.get('/rides/current')).body.ride.status).toBe(
+        'MATCHED',
+      );
+      expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
+        'REQUESTED',
+      );
+      const pool = await prisma.pool.findFirstOrThrow();
+      expect(pool.seatsTaken).toBe(3);
+    });
+
+    it(
+      'race: a request saved while the accept is committing still gets a seat in that trip',
+      async () => {
+        for (let round = 0; round < ROUNDS; round++) {
+          await fresh();
+          const { jashim } = await twoIdleDrivers();
+          const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+          const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+          const nusratRide = await nusrat.post('/rides').send(trip(BAN, MOH));
+
+          // Rafiq asks at the very moment Jashim accepts Nusrat: his own auto-join may run
+          // before the new trip is committed, so it is the accept that has to seat him.
+          const [accepted, rafiqRide] = await Promise.all([
+            jashim.post(`/driver/requests/${nusratRide.body.id}/accept`),
+            rafiq.post('/rides').send(trip(BAN, GL1)),
+          ]);
+          expect(accepted.status).toBe(200);
+          expect(rafiqRide.status).toBe(201);
+
+          const rafiqNow = (await rafiq.get('/rides/current')).body.ride;
+          expect(rafiqNow.status).toBe('MATCHED');
+          expect(rafiqNow.driver.name).toBe('Jashim');
+          const pool = await prisma.pool.findFirstOrThrow();
+          expect(pool.seatsTaken).toBe(2);
+        }
+      },
+      RACE_TIMEOUT_MS,
+    );
+  });
+
   describe('live updates (Server-Sent Events)', () => {
     const cookieOf = async (email: string, role: string) => {
       const response = await request(app.getHttpServer())
