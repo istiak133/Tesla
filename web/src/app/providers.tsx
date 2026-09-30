@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError } from "@/lib/api";
+import { LiveUpdates } from "@/lib/live";
 
 // One QueryClient per browser tab. It caches API responses and handles polling.
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -35,6 +36,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
     return client;
   });
   return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <QueryClientProvider client={queryClient}>
+      <LiveUpdates>{children}</LiveUpdates>
+    </QueryClientProvider>
   );
 }

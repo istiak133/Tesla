@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Post,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { PublicUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
@@ -14,6 +15,7 @@ import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard.js';
 import { Role } from '../generated/prisma/client.js';
+import { PublishChangesInterceptor } from '../realtime/publish-changes.interceptor.js';
 import { RequestRideDto } from './dto/request-ride.dto.js';
 import { RidesService } from './rides.service.js';
 
@@ -21,6 +23,8 @@ import { RidesService } from './rides.service.js';
 @Controller('rides')
 @UseGuards(SessionAuthGuard, RolesGuard)
 @Roles(Role.PASSENGER)
+// Every successful action tells open screens to refresh (live updates, D-020).
+@UseInterceptors(PublishChangesInterceptor)
 export class RidesController {
   constructor(private readonly ridesService: RidesService) {}
 

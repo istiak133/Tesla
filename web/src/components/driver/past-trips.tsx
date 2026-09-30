@@ -2,15 +2,17 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useRefreshInterval } from "@/lib/live";
 import { dhakaTime, taka } from "@/lib/format";
 import type { PastTrip } from "@/lib/types";
 import { Card, EmptyState, ErrorNote, Loading, StatusBadge } from "../ui";
 
 export function PastTrips() {
+  const refetchInterval = useRefreshInterval(10000);
   const trips = useQuery({
     queryKey: ["driver-trips"],
     queryFn: () => api<PastTrip[]>("/driver/trips"),
-    refetchInterval: 10000,
+    refetchInterval,
   });
 
   // Totals over the trips listed: what the driver keeps and what is owed to the platform.

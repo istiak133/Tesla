@@ -6,7 +6,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 - 🌐 **Live demo:** https://tesla-pool-one.vercel.app (choose Passenger or Driver, then a one-click demo account)
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
-- 🧪 **Quality:** 75 unit and 74 end-to-end tests against PostgreSQL, CI on every pull request
+- 🧪 **Quality:** 77 unit and 80 end-to-end tests against PostgreSQL, CI on every pull request
 
 ---
 
@@ -45,7 +45,8 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 **🚗 Driver**
 - A **suggested route** from where the car is and where riders are waiting (one tap to take it, or pick another)
-- Go online and see waiting requests **nearest pickup first**, each with its distance ("pickup 3 km ahead") or the reason it cannot be taken (e.g. "Behind your car"); requests waiting 5+ minutes are lifted to the top
+- Go online and see **only the requests your car can take**, nearest pickup first, each with its distance ("pickup 3 km ahead"); requests waiting 5+ minutes are lifted to the top
+- A request reaches every driver whose car can take it; the **first to accept gets it**, and it leaves the other drivers' screens at once (the late tap gets "Another driver took this request")
 - Accept: a new trip starts **where the car is**, and the car drives stop by stop to the pickup
 - Drive stop by stop: arrive → picked up / drop off / no-show → leave for the next stop
 - Cancel before the first pickup (passengers go back to waiting)
@@ -67,7 +68,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 - One-command local run with Docker Compose; CI on every pull request
 
 **🖥️ Web**
-- Next.js app for both roles, polling every 3 s; loading, error and empty states; a same-origin `/api` proxy (no CORS)
+- Next.js app for both roles, with **live updates over Server-Sent Events** (a change reaches open screens in under 0.1 s in Docker and about 1.4 s on the free live hosting, where most of that is the action's own round trip to the API; polling only as a fallback); loading, error and empty states; a same-origin `/api` proxy (no CORS)
 
 ## 📸 Screenshots
 
@@ -101,7 +102,7 @@ flowchart LR
     B["Browser<br/>passenger and driver screens"] -->|"HTTPS · session cookie"| W["Next.js on Vercel<br/>pages · TanStack Query · /api/* proxy"]
     W -->|"same origin, no CORS"| A["NestJS API on Render<br/>controller → service → repository"]
     A -->|"transactions · SELECT … FOR UPDATE"| D[("PostgreSQL on Neon<br/>CHECK constraints · partial unique indexes")]
-    W -. "polls every 3 s" .-> A
+    W -. "event stream (SSE) · polling as fallback" .-> A
 ```
 
 ### 🗄️ Data model (ERD)
@@ -124,7 +125,19 @@ erDiagram
     ZONES ||--o{ RIDE_REQUESTS : "pickup / drop-off"
     POOLS ||--o{ RIDE_REQUESTS : "late-cancel fees"
     RIDE_REQUESTS ||--o{ RIDE_REQUESTS : "fee paid with"
+    ZONES ||--o{ VEHICLES : "car is at"
+    POOLS ||--o{ RIDE_EVENTS : "during trip"
+    USERS ||--o{ RIDE_EVENTS : "actor (null = system)"
 
+    USERS {
+        uuid id PK
+        text email "unique, CHECK lower case"
+        text phone "unique, CHECK +8801XXXXXXXXX"
+        text present_address
+        text permanent_address
+        enum role "PASSENGER or DRIVER"
+        text password_hash "bcrypt"
+    }
     DRIVER_PROFILES {
         uuid user_id PK
         enum id_type "NID or PASSPORT"
@@ -133,6 +146,7 @@ erDiagram
     }
     VEHICLES {
         uuid id PK
+        uuid driver_id FK "unique: one car per driver"
         text plate_number "unique"
         int seat_capacity "CHECK > 0"
         bool is_online
@@ -142,6 +156,7 @@ erDiagram
     POOLS {
         uuid id PK
         uuid vehicle_id FK "one active per vehicle"
+        uuid route_id FK
         int current_stop "where the car is"
         enum status
         int seats_taken "CHECK <= seat_capacity"
@@ -220,8 +235,8 @@ erDiagram
 | **PostgreSQL** | MongoDB, MySQL | Row locks, CHECK constraints and partial unique indexes make seat safety a database guarantee, not only a code promise | Never for the core; at scale add read replicas and split by city area |
 | **Prisma** | Drizzle, TypeORM, raw SQL | Typed queries for the pool, member and ride joins, and versioned migrations where the seat CHECKs and partial unique indexes are written by hand; raw SQL only for `SELECT … FOR UPDATE` | If most queries became hand-tuned SQL, a query builder (Drizzle, Kysely) |
 | **Database sessions** | JWT | An httpOnly cookie through the same-origin proxy, revocable at logout, no token handling in the browser | Short-lived JWTs when many services must verify users without a database call, or for native mobile apps |
-| **Next.js + TanStack Query** | React SPA (Vite), server-rendered pages | The `/api` rewrite gives a first-party cookie with no CORS; TanStack Query gives polling, loading and error states | A native app when drivers need background location |
-| **Polling every 3 s** | WebSockets, SSE | Simple, works on free hosting; correctness never depends on it because every action is re-checked under the lock | Adaptive polling, then SSE or WebSockets with pub/sub as screens grow |
+| **Next.js + TanStack Query** | React SPA (Vite), server-rendered pages | The `/api` rewrite gives a first-party cookie with no CORS; TanStack Query caches each screen, refetches it on a live hint, and gives loading and error states | A native app when drivers need background location |
+| **Server-Sent Events** (live updates) | WebSockets, faster polling | One-way hints are all the screens need; plain HTTP through the same `/api` proxy and cookie; the browser reconnects by itself. Events carry no data, so nothing private can leak, and correctness never depends on them because every action is re-checked under the lock | WebSockets when drivers stream live GPS; a pub/sub backend (`LISTEN/NOTIFY`, Redis) once there is more than one API instance |
 | **Vitest + Supertest on a real PostgreSQL** | Jest, mocked database | Race conditions and constraints can only be proven against the real database | Not planned |
 | **Tailwind CSS** (styling) | CSS Modules, a component library (MUI, shadcn/ui) | Two small screens with clear states (loading, error, empty, the route line) built fast and consistently, with no design-system weight | A component library once there are many screens, forms and a design team |
 | **class-validator DTOs** (validation) | Zod, Joi | Built into NestJS's `ValidationPipe`: every request body is checked and unknown fields are rejected before a service sees it | Zod if the web and API shared schemas in one monorepo |
@@ -342,6 +357,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | A freed seat goes straight to a waiting rider (cancel, no-show, drop-off), best rider first, never one behind the car; two cars freeing seats at once and a rider cancelling as her seat frees (5 rounds each) | `api/test/refill.e2e-spec.ts` |
 | The ৳20 late-cancel fee: free while stops away and in the grace period, charged once the car is coming, a no-show too, and the money trail through the next ride and both drivers | `api/src/fares/cancellation.spec.ts`, `api/test/cancel-fee.e2e-spec.ts` |
 | The route list shows only routes through the car, with riders waiting on each | `api/test/driver-routes.e2e-spec.ts` |
+| Only takeable requests are listed; two drivers accepting the same request at once (5 rounds: one wins, no empty trip left); a taken request leaves the other lists; the event stream hears a change the moment it commits, per role, and needs a session | `api/src/realtime/realtime.service.spec.ts`, `api/test/live-dispatch.e2e-spec.ts` |
 | Nobody loses money on any trip any route can sell (about 25,000 cases) | `api/src/fares/earnings.spec.ts` |
 | Matching by the car's position: new trips start at the car, pickups behind are refused, the nearest car wins auto-join over an older trip, the list is nearest first with aging | `api/src/pooling/matching.spec.ts`, `api/test/matching.e2e-spec.ts` |
 | Sign-up for both account types (every field checked, NID or passport, duplicates refused with nothing half made), login with the account type, and a new driver taking a real ride | `api/src/auth/identity.spec.ts`, `api/test/auth.e2e-spec.ts` |
@@ -399,7 +415,8 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | POST | `/driver/location` | Driver: where the car is `{zoneId}` (before a trip; stops update it after that); a chosen route that does not pass the new zone is cleared and the driver goes offline |
 | POST | `/driver/route` | Driver: choose the route `{routeId}` (only between trips; it must pass the car's zone) |
 | POST | `/driver/online`, `/driver/offline` | Driver: availability (a route is required; offline refused during a trip) |
-| GET | `/driver/requests` | Driver: waiting requests, best first, with `pickupKmAhead`, `canAccept` and a reason |
+| GET | `/driver/requests` | Driver: the waiting requests this car can take, best first, with `pickupKmAhead` |
+| GET | `/events/stream` | Server-Sent Events for the logged-in user: `change` events with topics (`requests` for drivers, `rides` for everyone) and a 25 s heartbeat; no data, screens refetch |
 | POST | `/driver/requests/:id/accept` | Driver: accept (starts a trip at the car's stop on its route, or adds to the current one) |
 | GET | `/driver/pool` | Driver: vehicle, route and current trip with its stops and passengers |
 | GET | `/driver/trips` | Driver: past trips with passengers, cash collected, driver earnings and platform fee |
@@ -524,8 +541,9 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 - ❌ **Cancelling:** passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting.
   - A cancel frees the seat at once, closes the trip if it is now empty, and never raises a co-rider's fare (sharing counts only riders who were in the car).
   - 💸 **Late cancel ৳20:** once the car is coming straight to the rider's stop or is there (after a 2-minute grace from getting the seat), a cancel or a no-show costs ৳20, all of it for the driver who came. It is paid in cash with the rider's next ride.
-- ♻️ **Freed seats are refilled at once:** after a cancel, a no-show or a drop-off, the same transaction seats waiting riders who fit (5+ minutes first, then the nearest pickup). Waiting riders are locked with `SKIP LOCKED`, so two cars filling seats at once never deadlock and never seat the same rider.
   - A cancel racing the driver (accept, pickup, no-show, trip cancel) is decided under the same vehicle lock: exactly one wins, and the other side is told why. Cancelling twice returns the cancelled ride instead of an error.
+- ♻️ **Freed seats are refilled at once:** after a cancel, a no-show or a drop-off, the same transaction seats waiting riders who fit (5+ minutes first, then the nearest pickup). Waiting riders are locked with `SKIP LOCKED`, so two cars filling seats at once never deadlock and never seat the same rider.
+- 📡 **Idle cars get requests by broadcast:** a request that fits no running trip goes to every driver whose car can take it; the first to accept gets it, and it leaves the others' screens at once.
 
 ## 🔒 Concurrency: Bullet's last seat
 
@@ -538,20 +556,29 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 3. 🛡️ Two database guards back this up even if the code had a bug: the seat update itself only succeeds if there is still room (`seats_taken ≤ capacity − n`, trip still active, car not past the pickup), and `CHECK seats_taken ≤ seat_capacity` refuses anything else. A compare-and-set on the request status means one request can never take two seats.
 4. 🔁 The same lock serialises the en-route case: "the car leaves Mohakhali" and "Shirin joins at Mohakhali" can never both succeed.
 
+**The other side: two drivers, one request**
+- 🙋 **The case:** Nusrat's request fits two idle cars, and Jashim and Rahim tap Accept at the same instant.
+- 🔐 Each accept locks only its own car, so the two never wait on each other's car. Each ends with a compare-and-set `REQUESTED → MATCHED` on Nusrat's request.
+- ✅ PostgreSQL's row lock on that one request lets exactly one update through. The other sees `MATCHED`, and its whole transaction rolls back, including the empty trip it had just started. That driver gets `409 ALREADY_TAKEN` "Another driver took this request".
+- 📡 Every other screen drops the request over Server-Sent Events almost at once (80 ms in Docker, about 1.4 s end to end on the free live hosting), so late taps are rare.
+- 🧾 **Two passengers at the same instant:** both requests are always stored, because they are separate rows. The only contest is for the seat, settled above.
+
 **Proof**
 - 🧪 Tested with exactly this case (Nusrat and Shirin, five rounds), with 20 riders racing for the last seat (one wins, 19 keep waiting) and with the leave/join race.
-- 🔓 No deadlocks: every transaction takes a single vehicle lock, first, and a lock wait over 3 s returns `503 BUSY` instead of hanging.
+- 🧪 Two drivers accepting the same request, five rounds: always one `200` and one `409`, one seat, and no empty trip left behind. Measured in the browser: the request left the other driver's screen in 80 ms.
+- 🔓 No deadlocks: a transaction takes at most one vehicle lock, and takes it first. Refilling a freed seat then locks waiting rides with `SKIP LOCKED`, which never waits, and a passenger's own cancel of a waiting ride is a single compare-and-set that holds no other lock. A lock wait over 3 s returns `503 BUSY` instead of hanging.
 
 **At larger scale**
 - 📈 The lock is per vehicle, so different cars never block each other and seat safety needs no distributed lock.
-- 🧰 What changes is everything around it: more API instances, a connection pooler, reads moved off the primary, idempotent retries and push updates (next section).
+- 🧰 What changes is everything around it: more API instances, a connection pooler, reads moved off the primary, idempotent retries, and live updates relayed across instances (next section).
+- 🎯 Broadcast becomes **sequential offers**: offer the nearest driver first for a few seconds, then widen, so drivers stop racing for the same tap. The compare-and-set stays as the final guard, and an idempotency key makes a retried accept safe.
 
 ## 📈 Bonus: if Oi Tesla goes viral (1M passengers, 100k drivers)
 
 **🔢 First, the numbers**
 - 🧑‍🤝‍🧑 If 20% of passengers ride twice a day: about **400,000 rides a day**, about 60,000 in the busiest hour, so **~17 seat decisions per second**. PostgreSQL handles that easily.
 - 📍 The heavy load is elsewhere: 100k drivers sending a location every 4 s is **25,000 writes/s**.
-- 🔁 Screens polling every 3 s would be **~67,000 requests/s**, mostly "no change".
+- 🔁 Screens polling every 3 s would be **~67,000 requests/s**, mostly "no change". That is why screens get pushed hints over SSE today and poll only as a fallback.
 - 🎯 So the plan keeps the seat decision where it is and moves the high-volume, low-value traffic away from it.
 
 ```mermaid
@@ -577,7 +604,7 @@ flowchart LR
 | Geospatial search | With live GPS, store each driver's last position in an in-memory geo index (Redis GEO or H3 cells) with a short TTL, and query "cars near this pickup, on a route that passes it". PostGIS for the static route shapes. |
 | Ride matching | Keep R1–R4 as the rule. Candidate search runs without a lock (as today); only the final seat is taken under the car's lock. For a very busy area, feed requests through a per-area queue so matching there runs in order. |
 | Queues and events | After a commit, publish "seat taken", "arrived", "dropped off" to an event stream (transactional outbox, so no event is lost or sent for a rolled-back change). Workers handle notifications, fee settlement and analytics outside the request. |
-| Real-time communication | Replace polling with SSE or WebSockets fed by the event stream; keep adaptive polling as a fallback. |
+| Real-time communication | SSE hints are built (D-020). At scale, feed them from `LISTEN/NOTIFY` or a Redis/NATS channel so every API instance hears every change, and send per-user topics so only affected screens refetch. |
 | Rate limiting | Per user and per IP at the load balancer (today only sign-up and login are limited, per client IP), stricter on ride requests and driver actions. |
 | Idempotency | An `Idempotency-Key` header on every write; the first response is stored with the key and returned for any retry, so a double tap on a slow network never books twice. |
 | Retry and failure strategy | A lock wait over 3 s already returns `503 BUSY`; clients retry with backoff and the same idempotency key. Auto-join is best effort: if it fails, the ride simply waits. Health checks remove broken instances. |
@@ -600,7 +627,8 @@ flowchart LR
 | Cancel is idempotent and decided under the vehicle lock; a late cancel costs ৳20, paid with the next ride | A rider who never rides again never pays the fee; in return nobody is asked for cash without a ride, and the driver who came is still paid |
 | A freed seat goes straight to a waiting rider | Riders are seated without being asked (like auto-join); in return nobody waits for a driver's tap while a seat is empty |
 | No seat hold: a fitting request takes its seat at once | The driver does not approve each join; they keep control through the route, accept, no-show and cancel |
-| Polling every 3 s | Some wasted requests; simple and reliable on free hosting |
+| Live hints over SSE, data refetched by each screen | One small refetch per hint per open screen; in return no ride data travels in events, and polling still works if the stream drops |
+| Broadcast to idle drivers, first accept wins | Drivers can race for the same tap (settled by the compare-and-set; the late one is told why); in return a request is filled by whoever is free first |
 | Sessions in the database through a same-origin proxy | One database lookup per request; no CORS, revocable sessions |
 | Account type chosen first; separate passenger and driver sign-up | Two endpoints and two forms to keep in step; each gets only the fields it needs, and a client can never pick its own role |
 | Pull requests with CI gates and merge commits into a protected `master` | Slower than pushing directly; the history shows every step |
@@ -612,7 +640,7 @@ flowchart LR
 - 🪑 **Seats are counted per trip, not per stretch.** Anyone not yet dropped off holds their seat, so a join that would fit later on the route can be refused until someone gets off.
 - ⏱️ **Driver pay has no time component.** No per-minute rate for traffic, no pay for driving to the first pickup or empty stretches, no surge or incentives.
 - 💵 **Cash only.** The platform fee is recorded per trip, not collected.
-- 🔁 **Polling, not push.** Screens refresh every 3 s, route suggestions every 5 s, histories every 10 s.
+- 🔁 **Live updates need a single API instance.** The event bus is in-process, so a second API instance would not hear the first one's changes (its screens would fall back to polling). The fix is `LISTEN/NOTIFY` or Redis behind the same interface.
 - 🔂 **No idempotency key.** A retried request gets a `409` rather than the original answer.
 - ⌛ **Requests do not expire.** A waiting request stays until it is matched or cancelled.
 - 💸 **The late-cancel fee is only as good as the next ride.** It is paid in cash with the rider's next ride, so someone who never rides again never pays it. Requesting and cancelling is not rate-limited.
@@ -629,7 +657,7 @@ flowchart LR
 | Improvement | How |
 |---|---|
 | **Batch matching and offers to idle cars** | Collect requests for a few seconds, then match all waiting requests to all cars at once with a score of pickup wait (approach km), in-car detour and empty km, instead of one request at a time. Offer the best request to an idle nearby car, which accepts within a few seconds or the offer moves to the next car. The seat is still taken under each car's lock. |
-| **Push updates instead of polling** | An SSE endpoint per screen (`/rides/current/stream`, `/driver/stream`). After each committed change the API publishes an event (PostgreSQL `LISTEN/NOTIFY` for one instance, a pub/sub channel for several) and the stream sends the new state. Keep adaptive polling as the fallback: fast during a trip, slow when idle, paused in background tabs. |
+| **Live updates across instances, and sequential offers** | Back `RealtimeService` with PostgreSQL `LISTEN/NOTIFY` (then Redis or NATS) so every instance relays every change, and name a vehicle or ride in each hint. Replace the broadcast with an `offers` table (one row per request and driver, with an expiry): offer the nearest driver first, widen after a few seconds, and keep the compare-and-set as the final guard. |
 | **Idempotency keys** | The client sends an `Idempotency-Key` header on `POST /rides` and driver actions. A new `idempotency_keys` table (user, key, request hash, response, time) with a unique index on (user, key); the response is stored in the same transaction as the change, and a retry with the same key gets the stored response. Keys expire after 24 h. |
 | **Request expiry** | An `expires_at` on each request (e.g. 10 minutes) and a new `EXPIRED` status. Expired requests are skipped and marked under the lock at auto-join and accept, plus a small scheduled sweep for the rest. |
 | **"Pause new joins" for drivers** | An `accepting_joins` flag on the pool, changed under the vehicle lock. R4 checks it, and the conditional seat update includes it, so no join slips in after a pause. |
@@ -679,7 +707,7 @@ flowchart LR
 - ❌ **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **🔎 What I checked myself**
-- 🧪 The core rules are backed by tests: 75 unit and 74 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- 🧪 The core rules are backed by tests: 77 unit and 80 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - 🤖 CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - 🕵️ A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - ❌ A later audit of the passenger cancel ran every race around it as real parallel requests. The data was always right, but three answers were wrong: a double tap got `409`, a cancel racing a no-show got `409`, and a driver racing a cancel was not told the rider cancelled. All three were fixed and tested (D-016). The same run exposed a flaky test (too much work for vitest's 5 s limit), which was split up rather than retried.

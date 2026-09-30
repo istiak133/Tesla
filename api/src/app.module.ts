@@ -14,6 +14,7 @@ import { buildLoggerParams } from './config/logger.config.js';
 import { DatabaseModule } from './database/database.module.js';
 import { GeographyModule } from './geography/geography.module.js';
 import { HealthModule } from './health/health.module.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
 import { RidesModule } from './rides/rides.module.js';
 import { UsersModule } from './users/users.module.js';
 
@@ -48,6 +49,7 @@ import { UsersModule } from './users/users.module.js';
     UsersModule,
     AuthModule,
     GeographyModule,
+    RealtimeModule,
     RidesModule,
   ],
 })

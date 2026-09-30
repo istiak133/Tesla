@@ -2,16 +2,18 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useRefreshInterval } from "@/lib/live";
 import { dhakaTime, taka } from "@/lib/format";
 import type { DriverState, WaitingRequest } from "@/lib/types";
 import { Button, Card, EmptyState, ErrorNote, Loading } from "../ui";
 
 export function WaitingRequests() {
+  const refetchInterval = useRefreshInterval(3000);
   const queryClient = useQueryClient();
   const requests = useQuery({
     queryKey: ["driver-requests"],
     queryFn: () => api<WaitingRequest[]>("/driver/requests"),
-    refetchInterval: 3000,
+    refetchInterval,
   });
 
   const accept = useMutation({
@@ -21,7 +23,7 @@ export function WaitingRequests() {
       queryClient.setQueryData(["driver-state"], next);
       queryClient.invalidateQueries({ queryKey: ["driver-requests"] });
     },
-    // Another driver or an automatic join may have taken it: refresh either way.
+    // First accept wins (D-020): another driver may have taken it a moment ago.
     onError: () =>
       queryClient.invalidateQueries({ queryKey: ["driver-requests"] }),
   });
@@ -37,8 +39,8 @@ export function WaitingRequests() {
       )}
       {requests.data && requests.data.length === 0 && (
         <EmptyState
-          title="Nobody is waiting"
-          hint="New requests appear here automatically."
+          title="No requests for your car right now"
+          hint="Requests your car can take appear here the moment they are made."
         />
       )}
       {requests.data && requests.data.length > 0 && (
@@ -72,15 +74,12 @@ export function WaitingRequests() {
                 </div>
                 <Button
                   loading={accept.isPending && accept.variables === request.id}
-                  disabled={!request.canAccept || accept.isPending}
+                  disabled={accept.isPending}
                   onClick={() => accept.mutate(request.id)}
                 >
                   Accept
                 </Button>
               </div>
-              {request.reason && (
-                <p className="mt-2 text-xs text-stone-500">{request.reason}</p>
-              )}
             </li>
           ))}
         </ul>

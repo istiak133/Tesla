@@ -98,15 +98,14 @@ describe('Matching by the car’s position (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: UTT, dropoffZoneId: BAN, seats: 1 });
 
-    const list = await jashim.get('/driver/requests');
-    expect(list.body[0]).toMatchObject({
-      canAccept: false,
-      pickupKmAhead: null,
-      reason: 'Behind your car (Uttara)',
-    });
+    // Not listed for this car (D-020); accepting it anyway is refused with the reason.
+    expect((await jashim.get('/driver/requests')).body).toEqual([]);
     const accept = await jashim.post(`/driver/requests/${ride.body.id}/accept`);
     expect(accept.status).toBe(409);
-    expect(accept.body.code).toBe('NOT_COMPATIBLE');
+    expect(accept.body).toMatchObject({
+      code: 'NOT_COMPATIBLE',
+      message: 'Behind your car (Uttara)',
+    });
   });
 
   it('A: the route must pass the car: moving off it clears the route, and only a route through the car can be chosen', async () => {
@@ -205,7 +204,6 @@ describe('Matching by the car’s position (e2e)', () => {
     ).toEqual([
       ['Nusrat', 0],
       ['Rafiq', 3],
-      ['Shirin', null],
-    ]);
+    ]); // Shirin, behind the car, is not listed for Jashim at all (D-020)
   });
 });
