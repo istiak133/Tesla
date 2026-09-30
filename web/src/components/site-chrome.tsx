@@ -7,12 +7,15 @@ export function SiteHeader({ right }: { right?: React.ReactNode }) {
     <header className="bg-ink text-cream">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-3.5">
         <Link href="/" className="flex items-center gap-3">
-          <span
-            aria-hidden
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-cream text-xl shadow-inner"
-          >
-            🛺
-          </span>
+          {/* The Bullet logo, on its own cream tile. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/brand/bullet-logo-192.png"
+            alt=""
+            width={48}
+            height={48}
+            className="h-12 w-12 rounded-xl"
+          />
           <span>
             <span className="block whitespace-nowrap font-display text-xl leading-none tracking-tight sm:text-2xl">
               Dhaka Tesla Pool
