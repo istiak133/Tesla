@@ -6,7 +6,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 - 🌐 **Live demo:** https://tesla-pool-one.vercel.app (choose Passenger or Driver, then a one-click demo account)
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
-- 🧪 **Quality:** 77 unit and 85 end-to-end tests against PostgreSQL, CI on every pull request
+- 🧪 **Quality:** 77 unit and 88 end-to-end tests against PostgreSQL, CI on every pull request
 
 ---
 
@@ -47,6 +47,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 - A **suggested route** from where the car is and where riders are waiting (one tap to take it, or pick another)
 - Go online and see **only the requests your car can take**, nearest pickup first, each with its distance ("pickup 3 km ahead"); requests waiting 5+ minutes are lifted to the top
 - A request reaches every driver whose car can take it; the **first to accept gets it**, and it leaves the other drivers' screens at once (the late tap gets "Another driver took this request")
+- Only a trip's **first passenger** goes through the driver: right after an accept, riders already waiting who fit the new trip are seated by the system, not sent back for a second tap
 - Accept: a new trip starts **where the car is**, and the car drives stop by stop to the pickup
 - Drive stop by stop: arrive → picked up / drop off / no-show → leave for the next stop
 - Cancel before the first pickup (passengers go back to waiting)
@@ -546,6 +547,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
   - A cancel racing the driver (accept, pickup, no-show, trip cancel) is decided under the same vehicle lock: exactly one wins, and the other side is told why. Cancelling twice returns the cancelled ride instead of an error.
 - ♻️ **Freed seats are refilled at once:** after a cancel, a no-show or a drop-off, the same transaction seats waiting riders who fit (5+ minutes first, then the nearest pickup). Waiting riders are locked with `SKIP LOCKED`, so two cars filling seats at once never deadlock and never seat the same rider.
 - 📡 **Idle cars get requests by broadcast:** a request that fits no running trip goes to every driver whose car can take it; the first to accept gets it, and it leaves the others' screens at once.
+- 🧲 **After the first accept, the system seats the rest:** once an accept has committed, a short transaction under the car's lock seats the waiting riders who fit the new trip. Running it after the commit (not inside the accept) means a request saved at the same moment can never miss the trip: either this fill sees the request, or the request's own auto-join sees the committed trip.
 
 ## 🔒 Concurrency: Bullet's last seat
 
@@ -709,7 +711,7 @@ flowchart LR
 - ❌ **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **🔎 What I checked myself**
-- 🧪 The core rules are backed by tests: 77 unit and 85 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- 🧪 The core rules are backed by tests: 77 unit and 88 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - 🤖 CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - 🕵️ A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - ❌ A later audit of the passenger cancel ran every race around it as real parallel requests. The data was always right, but three answers were wrong: a double tap got `409`, a cancel racing a no-show got `409`, and a driver racing a cancel was not told the rider cancelled. All three were fixed and tested (D-016). The same run exposed a flaky test (too much work for vitest's 5 s limit), which was split up rather than retried.

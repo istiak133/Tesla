@@ -167,6 +167,7 @@ flowchart TD
 - **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool can accept only requests that pass R1 – R4.
 - **Broadcast, first accept wins:** a request that fits no running trip is shown to every driver whose car can take it, and only to them; the first accept gets it (compare-and-set on the request), and the late one is told "Another driver took this request". It leaves every other list at once over Server-Sent Events (decision D-020).
 - **A freed seat is filled at once:** after a cancel, a no-show or a drop-off, the same transaction seats waiting riders who fit, in the waiting-list order below (decision D-017). No driver tap, no seat hold.
+- **Only the first passenger goes through the driver:** right after an accept commits, waiting riders who fit the car's trip are seated by the system in the same order (decision D-022). So two riders who ask at once while no trip exists both go to the drivers, and once one is accepted, the other is seated without a second tap.
 - **Waiting list order:** takeable requests waiting 5 minutes or more first (oldest first, so no one waits for ever), then the other takeable ones by nearest pickup, then the ones the driver cannot take, each with its reason. Every item shows how far ahead its pickup is.
 
 ### 4.5 Constraints
@@ -402,3 +403,4 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-23 | A seat freed by a cancel, a no-show or a drop-off goes straight to a waiting rider who fits. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-24 | A late cancel or a no-show costs ৳20 (after a 2-minute grace), paid in cash with the next ride, earned by the driver who came. | [6.1](#61-passenger-cancellation) |
 | A-25 | Idle drivers see only requests their car can take; the first accept wins; changes reach open screens over SSE. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-26 | Only a trip's first passenger goes through a driver; after an accept, riders already waiting who fit that trip are seated by the system. | [4.4](#44-automatic-join-and-driver-accept) |

@@ -1124,3 +1124,45 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
   - the passenger can still cancel for free while waiting again
 - It passed 15 of 15 runs after the order fix; before, it failed 2 times in about 12.
 - `cancel-fee.e2e-spec.ts` (+1): the fee stays owed through a cancelled next ride.
+
+## D-022: Only the first passenger goes through the driver; the system seats the rest (2026-09-30)
+
+**Context.** He found it on the live site: two passengers asked for the same route at the same moment, the driver accepted one, and the other came back to the driver as a request instead of being seated. His rule: only a trip's **first** passenger goes through the driver; after that, every rider who fits is seated by the system. He also asked to check requests from a stop ahead, several drivers on one route, and two drivers accepting at once.
+
+**How it was checked.** A script on the live system, with two separate test drivers (Rahim, Kamal) and test passengers, so a real trip left open on the live site was not touched:
+
+| Case | Result before the fix |
+|---|---|
+| Driver idle, two passengers ask at once; the driver accepts one | ❌ the other stays `REQUESTED` and is back in the driver's list as "can take" |
+| Trip running, two ask at once, 2 seats free | ✅ both seated automatically |
+| One seat left, two ask at once | ✅ one seated, the other waits; the full car does not list her |
+| Trip running; a rider at a stop ahead, and one where the car is | ✅ both seated automatically |
+| A rider behind the car | ✅ keeps waiting; not in this driver's list |
+| One car full, a second running car has room | ✅ the rider goes to the second car |
+| Two idle drivers accept the same first passenger at once | ✅ one `200`, one `409` "Another driver took this request"; no empty trip left |
+| Two idle drivers, two first passengers at once, one driver accepts | ❌ the other stays in both drivers' lists |
+
+**Root cause.** Waiting riders are seated automatically at three moments: when a request is made (auto-join), when a seat is freed (D-017), and when a driver cancels a trip (D-021). A fourth moment was missing: **when an accept creates a new trip.** Two passengers who ask while no trip exists are both "first passengers" and both go to the drivers (D-020, correct). But when the driver accepts one, the new trip had room for the other, and nothing seated them. The driver's list uses the same rule as auto-join (`joinProblem`), so a waiting rider shown as "can take" to a driver with a running trip always meant "the system should have seated this one".
+
+**Decision (built).**
+- **After every accept,** `PoolingService.fillTrip(vehicleId)` seats the waiting riders who fit that car's trip. It uses the same order as the D-017 refill (riders waiting 5+ minutes first, then the nearest pickup ahead) and the same checks (`joinProblem`, compare-and-set, the conditional seat update, `SKIP LOCKED`).
+- **After the commit, not inside the accept.** It runs in its own short transaction under the car's lock, after the accept has committed.
+  - **Inside the accept** it would miss a request saved while the accept is still committing. That request's own auto-join runs a moment too early to see the new trip, and the accept's fill runs a moment too early to see the request.
+  - **After the commit**, one of the two always sees the other. If the request was saved before the fill reads, the fill seats it; if after, its own auto-join sees the committed trip.
+  - Honest note: in the tests, a fill inside the transaction also passed 20 of 20 rounds, because the window is only milliseconds wide. It was chosen for the guarantee, not because a failure was seen. The cost is one more short transaction per accept.
+- **Best effort.** If the car is busy (`BUSY`), the riders simply keep waiting and stay in the driver's list, as with auto-join. A fill that fails runs in the D-017 savepoint, so the accept itself is never undone.
+- **History.** These seats are written as the system's action (`actor_user_id` null) with the reason "Joined a Tesla on the way automatically".
+- **What stays as before:**
+  - **The first passenger:** a trip's first passenger still goes to every idle driver who can take them (D-020), and the first accept wins (compare-and-set on the request).
+  - **Riders who do not fit:** riders behind the car, riders going another way, and riders who need more seats than are left keep waiting and stay visible to idle drivers.
+
+**Why this is the right rule.**
+- **Consistency:** it makes the four moments behave the same. A rider who fits a running car is seated by the system, whatever the order in which things happened.
+- **The driver:** the driver keeps control where it matters: the route, the first passenger, pickups, no-shows and cancelling before the first pickup.
+- **Fairness:** it is fair between riders, because they are seated in the waiting-list order, not by who a driver happens to tap.
+
+**Tests** (`test/live-dispatch.e2e-spec.ts`, +3; all fail without the fix):
+- two first passengers at once with two idle drivers: the driver accepts one, the other is seated in that trip (as the system), and both drivers' lists are empty
+- after the first accept, a rider who fits (a stop ahead) is seated, and one who needs 2 seats when 1 is left keeps waiting
+- race, 5 rounds: a request saved at the very moment of the accept always ends in that trip, with seats right
+- Full suite: 77 unit and 88 end-to-end tests pass.
