@@ -6,7 +6,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 
 - 🌐 **Live demo:** https://tesla-pool-one.vercel.app (choose Passenger or Driver, then a one-click demo account)
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
-- 🧪 **Quality:** 77 unit and 80 end-to-end tests against PostgreSQL, CI on every pull request
+- 🧪 **Quality:** 77 unit and 85 end-to-end tests against PostgreSQL, CI on every pull request
 
 ---
 
@@ -358,6 +358,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | The ৳20 late-cancel fee: free while stops away and in the grace period, charged once the car is coming, a no-show too, and the money trail through the next ride and both drivers | `api/src/fares/cancellation.spec.ts`, `api/test/cancel-fee.e2e-spec.ts` |
 | The route list shows only routes through the car, with riders waiting on each | `api/test/driver-routes.e2e-spec.ts` |
 | Only takeable requests are listed; two drivers accepting the same request at once (5 rounds: one wins, no empty trip left); a taken request leaves the other lists; the event stream hears a change the moment it commits, per role, and needs a session | `api/src/realtime/realtime.service.spec.ts`, `api/test/live-dispatch.e2e-spec.ts` |
+| A driver's trip cancel: riders back to waiting with no fee, re-seated at once in a running car that fits (oldest first) or shown to idle cars; the passenger can still cancel for free; a late-cancel fee stays owed through a cancelled next ride | `api/test/driver-cancel.e2e-spec.ts`, `api/test/cancel-fee.e2e-spec.ts` |
 | Nobody loses money on any trip any route can sell (about 25,000 cases) | `api/src/fares/earnings.spec.ts` |
 | Matching by the car's position: new trips start at the car, pickups behind are refused, the nearest car wins auto-join over an older trip, the list is nearest first with aging | `api/src/pooling/matching.spec.ts`, `api/test/matching.e2e-spec.ts` |
 | Sign-up for both account types (every field checked, NID or passport, duplicates refused with nothing half made), login with the account type, and a new driver taking a real ride | `api/src/auth/identity.spec.ts`, `api/test/auth.e2e-spec.ts` |
@@ -422,7 +423,7 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 | GET | `/driver/trips` | Driver: past trips with passengers, cash collected, driver earnings and platform fee |
 | POST | `/driver/pool/arrive`, `/driver/pool/depart` | Driver: arrive at the current stop; leave for the next one (409 while someone still waits here) |
 | POST | `/driver/pool/passengers/:rideId/pickup`, `/dropoff`, `/no-show` | Driver: one passenger at this stop; drop-off locks their fare |
-| POST | `/driver/pool/cancel` | Driver: cancel before the first pickup; passengers return to waiting |
+| POST | `/driver/pool/cancel` | Driver: cancel before the first pickup; passengers return to waiting (no fee) and are offered again at once |
 
 
 ### ❗ Errors
@@ -538,7 +539,8 @@ DATABASE_URL=postgresql://tesla:tesla@localhost:5434/tesla_test npm run test:e2e
 - 🧭 **Route choice:** the driver picks a route before going online (the system suggests the one with the most riders waiting ahead); it must pass the car's zone, and it stays fixed until the trip ends.
 - 📋 **The driver's list, best first:** requests the driver can take and that have waited 5+ minutes (oldest first, so nobody waits for ever), then the others they can take by nearest pickup, then those they cannot take, each with the reason.
 - ⏳ **Waiting:** a request that fits no running trip waits, and drivers see it.
-- ❌ **Cancelling:** passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting.
+- ❌ **Cancelling:** passengers can cancel until they are picked up; the driver can cancel only before the first pickup, and then everyone goes back to waiting, with no fee.
+  - 🔁 Riders sent back by a driver's cancel are offered again at once, oldest request first: a running car that fits takes them automatically, otherwise every idle car that can take them sees them.
   - A cancel frees the seat at once, closes the trip if it is now empty, and never raises a co-rider's fare (sharing counts only riders who were in the car).
   - 💸 **Late cancel ৳20:** once the car is coming straight to the rider's stop or is there (after a 2-minute grace from getting the seat), a cancel or a no-show costs ৳20, all of it for the driver who came. It is paid in cash with the rider's next ride.
   - A cancel racing the driver (accept, pickup, no-show, trip cancel) is decided under the same vehicle lock: exactly one wins, and the other side is told why. Cancelling twice returns the cancelled ride instead of an error.
@@ -707,7 +709,7 @@ flowchart LR
 - ❌ **Rejected: a 60-second seat hold where the driver confirms every join** (option Y). In en-route pooling the driver is driving between stops; asking them to tap within 60 seconds is unsafe, leaves the rider unsure, and brings back a HELD state and new races. A fitting request takes its seat at once instead.
 
 **🔎 What I checked myself**
-- 🧪 The core rules are backed by tests: 77 unit and 80 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
+- 🧪 The core rules are backed by tests: 77 unit and 85 end-to-end tests against a real PostgreSQL, including the races and one full journey from sign-up to the driver's earnings.
 - 🤖 CI (lint, types, unit, e2e, Docker build) must pass before anything reaches `master`, which is protected.
 - 🕵️ A final audit of the whole system found one real race (a passenger's cancel against the driver's trip cancel). It was fixed and tested before release.
 - ❌ A later audit of the passenger cancel ran every race around it as real parallel requests. The data was always right, but three answers were wrong: a double tap got `409`, a cancel racing a no-show got `409`, and a driver racing a cancel was not told the rider cancelled. All three were fixed and tested (D-016). The same run exposed a flaky test (too much work for vitest's 5 s limit), which was split up rather than retried.
