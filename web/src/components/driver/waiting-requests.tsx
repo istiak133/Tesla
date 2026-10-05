@@ -7,7 +7,12 @@ import { dhakaTime, taka } from "@/lib/format";
 import type { DriverState, WaitingRequest } from "@/lib/types";
 import { Button, Card, EmptyState, ErrorNote, Loading } from "../ui";
 
-export function WaitingRequests() {
+/**
+ * Requests only an idle car can serve: a trip's first passenger (D-020). Once a trip is
+ * running, riders who fit it are seated by the match round (D-023), so a driver with a trip
+ * sees an empty list on purpose.
+ */
+export function WaitingRequests({ onTrip }: { onTrip: boolean }) {
   const refetchInterval = useRefreshInterval(3000);
   const queryClient = useQueryClient();
   const requests = useQuery({
@@ -39,8 +44,16 @@ export function WaitingRequests() {
       )}
       {requests.data && requests.data.length === 0 && (
         <EmptyState
-          title="No requests for your car right now"
-          hint="Requests your car can take appear here the moment they are made."
+          title={
+            onTrip
+              ? "Riders join your trip automatically"
+              : "No requests for your car right now"
+          }
+          hint={
+            onTrip
+              ? "Anyone waiting ahead who fits your free seats is added within a few seconds."
+              : "Requests your car can take appear here the moment they are made."
+          }
         />
       )}
       {requests.data && requests.data.length > 0 && (

@@ -76,7 +76,7 @@ function DriverHome() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <CurrentTrip state={state.data} />
-        <WaitingRequests />
+        <WaitingRequests onTrip={Boolean(state.data?.pool)} />
       </div>
       <PastTrips />
     </div>
