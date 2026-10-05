@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma, RideStatus } from '../generated/prisma/client.js';
+import type { OpenTrip, WaitingRequest } from '../pooling/assignment.js';
 import type { Stop } from '../pooling/route-plan.js';
 import { RideError } from './ride.errors.js';
 
@@ -128,32 +129,53 @@ export class RidesRepository {
   }
 
   /**
-   * Pools a new request might join: active, driver online, and the route stops at the
-   * pickup zone, with their route's stops so the nearest car can be found.
-   * The full rules (R1–R4) are checked again under the lock.
+   * Running trips with at least one free seat, on cars that are online: everything the
+   * matcher can seat riders in (D-023). Read without a lock; every seat is taken later under
+   * the car's lock with R1–R4 checked again.
    */
-  async listJoinablePools(pickupZoneId: string) {
+  async listOpenTrips(): Promise<OpenTrip[]> {
     const pools = await this.prisma.pool.findMany({
       where: {
         status: { in: ACTIVE_POOL_STATUSES },
         vehicle: { isOnline: true },
-        route: { stops: { some: { zoneId: pickupZoneId } } },
       },
       orderBy: { createdAt: 'asc' },
       include: { route: { include: ROUTE_STOPS } },
     });
-    return pools.map((pool) => ({
-      poolId: pool.id,
-      vehicleId: pool.vehicleId,
-      createdAt: pool.createdAt,
-      currentStop: pool.currentStop,
-      stops: pool.route.stops.map((stop) => ({
-        position: stop.position,
-        zoneId: stop.zoneId,
-        name: stop.zone.name,
-        kmFromStart: stop.kmFromStart,
-      })),
-    }));
+    return pools
+      .filter((pool) => pool.seatsTaken < pool.seatCapacity)
+      .map((pool) => ({
+        vehicleId: pool.vehicleId,
+        poolId: pool.id,
+        createdAt: pool.createdAt,
+        status: pool.status,
+        currentStop: pool.currentStop,
+        seatCapacity: pool.seatCapacity,
+        seatsTaken: pool.seatsTaken,
+        stops: pool.route.stops.map((stop) => ({
+          position: stop.position,
+          zoneId: stop.zoneId,
+          name: stop.zone.name,
+          kmFromStart: stop.kmFromStart,
+        })),
+      }));
+  }
+
+  /** Requests still waiting for a seat, oldest first, at most `limit` of them (D-023). */
+  async listWaitingForMatch(limit: number): Promise<WaitingRequest[]> {
+    return this.prisma.rideRequest.findMany({
+      where: { status: RideStatus.REQUESTED },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      select: {
+        id: true,
+        pickupZoneId: true,
+        dropoffZoneId: true,
+        distanceKm: true,
+        seats: true,
+        createdAt: true,
+      },
+    });
   }
 
   /** The vehicle's current pool with its route and every member (for the driver screen). */
@@ -244,26 +266,6 @@ export class RidesRepository {
         },
       });
       return ride;
-    });
-  }
-
-  /**
-   * Waiting rides with a pickup in one of these zones, locked for this transaction.
-   * SKIP LOCKED passes over rides another transaction is taking right now (a driver's
-   * accept, another car filling a seat, the passenger's own cancel), so filling a freed
-   * seat never waits on a ride and two cars can never deadlock over the same riders.
-   */
-  async lockWaitingRides(tx: Tx, pickupZoneIds: string[]) {
-    if (pickupZoneIds.length === 0) {
-      return [];
-    }
-    const rows = await tx.$queryRaw<{ id: string }[]>`
-      SELECT id FROM ride_requests
-      WHERE status = 'REQUESTED' AND pickup_zone_id = ANY(${pickupZoneIds}::uuid[])
-      ORDER BY created_at
-      FOR UPDATE SKIP LOCKED`;
-    return tx.rideRequest.findMany({
-      where: { id: { in: rows.map((row) => row.id) } },
     });
   }
 

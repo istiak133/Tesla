@@ -66,43 +66,6 @@ export function newTripStart(
   return { startStop: carStop };
 }
 
-export type JoinCandidate = {
-  poolId: string;
-  vehicleId: string;
-  createdAt: Date;
-  currentStop: number;
-  stops: Stop[];
-};
-
-/**
- * The order in which auto-join tries the active trips: the car that reaches the pickup
- * soonest (fewest approach km) first; on a tie, the older trip first. Trips whose route
- * cannot carry the request, or whose car has passed the pickup, are left out.
- * This is only the order to try: the seat itself is still taken under each car's lock.
- */
-export function rankJoinCandidates(
-  candidates: JoinCandidate[],
-  trip: TripRequest,
-): (JoinCandidate & { approachKm: number })[] {
-  const ranked: (JoinCandidate & { approachKm: number })[] = [];
-  for (const candidate of candidates) {
-    if (routeProblem(candidate.stops, trip) !== null) {
-      continue;
-    }
-    const { pickupStop } = tripStops(candidate.stops, trip)!;
-    const km = approachKm(candidate.stops, candidate.currentStop, pickupStop);
-    if (km !== null) {
-      ranked.push({ ...candidate, approachKm: km });
-    }
-  }
-  ranked.sort(
-    (a, b) =>
-      a.approachKm - b.approachKm ||
-      a.createdAt.getTime() - b.createdAt.getTime(),
-  );
-  return ranked;
-}
-
 export type ListedRequest = {
   canAccept: boolean;
   pickupKmAhead: number | null;

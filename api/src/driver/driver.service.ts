@@ -10,6 +10,7 @@ import {
   orderWaitingList,
   stopOf,
 } from '../pooling/matching.js';
+import { fitsAnOpenTrip } from '../pooling/assignment.js';
 import { joinProblem, tripStops } from '../pooling/route-plan.js';
 import {
   rankRoutes,
@@ -216,6 +217,7 @@ export class DriverService {
     const vehicle = await this.getVehicle(driverId);
     const pool = await this.ridesRepository.findActivePoolDetails(vehicle.id);
     const waiting = await this.ridesRepository.listWaitingRequests();
+    const openTrips = await this.ridesRepository.listOpenTrips();
     const routes = await this.geographyRepository.listRoutes();
     const route = routes.find((r) => r.id === vehicle.routeId);
     const stops = route ? toStops(route) : [];
@@ -263,9 +265,20 @@ export class DriverService {
         reason,
       };
     });
+    // A request that some running trip can take belongs to the matcher (D-023): it is seated
+    // at the next round, so no driver sees it. Otherwise a driver's tap could undo the plan,
+    // for example a running car taking a rider another request needed it for. What drivers
+    // see is what only an idle car can serve: a trip's first passenger (D-020, D-022).
+    const forMatcher = new Set(
+      waiting
+        .filter((ride) => fitsAnOpenTrip(openTrips, ride))
+        .map((ride) => ride.id),
+    );
     // Only what this car can take; aged requests first, then the nearest pickup (D-014).
     return orderWaitingList(
-      listed.filter((request) => request.canAccept),
+      listed.filter(
+        (request) => request.canAccept && !forMatcher.has(request.id),
+      ),
       new Date(),
     );
   }
@@ -337,8 +350,8 @@ export class DriverService {
       );
     });
 
-    // Riders already waiting who fit this trip are seated now, not left for another tap.
-    await this.poolingService.fillTrip(vehicle.id);
+    // Riders already waiting who fit this new trip are seated by the next match round
+    // (D-022, D-023): only a trip's first passenger goes through a driver.
     return this.getCurrentPool(driverId);
   }
 

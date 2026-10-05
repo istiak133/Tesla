@@ -208,8 +208,7 @@ export class TripService {
         },
       });
 
-      // Seats freed here can go straight to riders waiting ahead (D-017).
-      await this.poolingService.fillFreedSeats(tx, pool.id);
+      // Seats freed here go to riders waiting ahead at the next match round (D-017, D-023).
       await this.poolingService.closeIfEmpty(tx, pool.id);
     });
     return this.driverService.getCurrentPool(driverId);
@@ -243,7 +242,6 @@ export class TripService {
    * otherwise every idle car that can take them sees them (D-020).
    */
   async cancelTrip(driverId: string) {
-    const returned: string[] = [];
     await this.inTrip(driverId, async (tx, pool) => {
       if (pool.startedAt !== null) {
         throw new RideError(
@@ -252,16 +250,14 @@ export class TripService {
         );
       }
 
-      // Oldest request first: when they are offered again, whoever asked first goes first.
-      // (Without an order the database returns them in any order, and a smaller later
-      // request could take the seats an earlier one needed.)
+      // The riders go back to waiting; the next match round offers them to running trips
+      // (D-021, D-023). Ordered so the history events are written oldest request first.
       const members = await tx.poolMember.findMany({
         where: { poolId: pool.id, leftAt: null },
         include: { rideRequest: true },
         orderBy: { rideRequest: { createdAt: 'asc' } },
       });
       for (const member of members) {
-        returned.push(member.rideRequestId);
         await tx.poolMember.update({
           where: { id: member.id },
           data: { leftAt: new Date() },
@@ -284,14 +280,6 @@ export class TripService {
       });
     });
 
-    // Outside this car's lock: auto-join takes other cars' locks, one at a time, and a
-    // transaction never holds two vehicle locks. Best effort, as for a new request.
-    for (const rideId of returned) {
-      const ride = await this.ridesRepository.findRide(rideId);
-      if (ride !== null && ride.status === RideStatus.REQUESTED) {
-        await this.poolingService.tryAutoJoin(ride);
-      }
-    }
     return this.driverService.getCurrentPool(driverId);
   }
 
