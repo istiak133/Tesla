@@ -2,11 +2,13 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { MATCH_REASON } from '../src/rides/matcher.service.js';
 import {
   createDriver,
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
@@ -25,7 +27,7 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
-    await app.listen(0); // a real port, for the event stream
+    // createTestApp already listens on 127.0.0.1: the event stream uses that port.
     const { port } = app.getHttpServer().address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${port}`;
   });
@@ -157,6 +159,9 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
       await jashim
         .post(`/driver/requests/${nusratRide.body.id}/accept`)
         .expect(200);
+      // Rafiq now fits a running trip, so he is the matcher's: no driver lists him.
+      expect((await rahim.get('/driver/requests')).body).toEqual([]);
+      await runMatcher(app);
 
       // Rafiq did not wait for a second tap: he is in Jashim's car, sharing with Nusrat.
       const rafiqNow = (await rafiq.get('/rides/current')).body.ride;
@@ -169,7 +174,39 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
         where: { rideRequestId: rafiqRide.body.id, toStatus: 'MATCHED' },
       });
       expect(event.actorUserId).toBeNull(); // the system, not a driver
-      expect(event.reason).toBe('Joined a Tesla on the way automatically');
+      expect(event.reason).toBe(MATCH_REASON);
+    });
+
+    it('a request that fits a running trip is shown to no driver; one that fits none is', async () => {
+      const { jashim, rahim } = await twoIdleDrivers();
+      const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+      const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+      const shirin = await loginAs(app, 'shirin@teslapool.test');
+      const nusratRide = await nusrat.post('/rides').send(trip(BAN, MOH));
+      await jashim
+        .post(`/driver/requests/${nusratRide.body.id}/accept`)
+        .expect(200);
+
+      // Rafiq fits Jashim's running trip: the matcher places him, so Rahim, idle at
+      // Banani, cannot take him for a new trip, and Jashim cannot grab him either.
+      const fits = await rafiq.post('/rides').send(trip(BAN, GL1));
+      // Shirin needs 3 seats: no running trip has them, so only an idle car can serve her.
+      const tooBig = await shirin.post('/rides').send(trip(BAN, MOH, 3));
+
+      const rahimList = (await rahim.get('/driver/requests')).body;
+      expect(rahimList.map((r: { id: string }) => r.id)).toEqual([
+        tooBig.body.id,
+      ]);
+      expect((await jashim.get('/driver/requests')).body).toEqual([]);
+
+      await runMatcher(app);
+      expect(
+        (
+          await prisma.rideRequest.findUniqueOrThrow({
+            where: { id: fits.body.id },
+          })
+        ).status,
+      ).toBe('MATCHED');
     });
 
     it('a rider who does not fit the new trip keeps waiting for a driver', async () => {
@@ -184,6 +221,7 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
       await jashim
         .post(`/driver/requests/${nusratRide.body.id}/accept`)
         .expect(200);
+      await runMatcher(app);
 
       expect((await shirin.get('/rides/current')).body.ride.status).toBe(
         'MATCHED',
@@ -196,7 +234,7 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
     });
 
     it(
-      'race: a request saved while the accept is committing still gets a seat in that trip',
+      'a request saved while the accept is committing still gets a seat in that trip',
       async () => {
         for (let round = 0; round < ROUNDS; round++) {
           await fresh();
@@ -205,14 +243,15 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
           const rafiq = await loginAs(app, 'rafiq@teslapool.test');
           const nusratRide = await nusrat.post('/rides').send(trip(BAN, MOH));
 
-          // Rafiq asks at the very moment Jashim accepts Nusrat: his own auto-join may run
-          // before the new trip is committed, so it is the accept that has to seat him.
+          // Rafiq asks at the very moment Jashim accepts Nusrat. With one trigger per event
+          // this was a race (D-022); with batch matching the next round simply sees both.
           const [accepted, rafiqRide] = await Promise.all([
             jashim.post(`/driver/requests/${nusratRide.body.id}/accept`),
             rafiq.post('/rides').send(trip(BAN, GL1)),
           ]);
           expect(accepted.status).toBe(200);
           expect(rafiqRide.status).toBe(201);
+          await runMatcher(app);
 
           const rafiqNow = (await rafiq.get('/rides/current')).body.ride;
           expect(rafiqNow.status).toBe('MATCHED');

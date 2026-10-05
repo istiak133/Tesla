@@ -57,7 +57,7 @@ Details and reasoning for each entry are further down in this file.
 | Merge flow | PR + manual merge | PR + auto-merge on green CI (`api`, `web`, `docker` required) | Implemented |
 | Geography | 3 routes, ordered stops, 2 km per hop → 14 zones + km table only (D-003) | 14 zones + symmetric km table **and** 3 fixed lines driven both ways = 6 routes with ordered stops (D-008) | Implemented (`routes`, `route_stops`, seed, `GET /zones`, `GET /routes`) |
 | Matching rule | Same route and direction, pickup ahead of the vehicle → M1–M4 same pickup zone + detour ≤ 2 km (D-003) | R1–R4: on the pool's route in its direction, the car has not passed the pickup, seats free, pool active (D-008) | Implemented (`pooling/route-plan.ts`, checked under the lock in `PoolingService.joinUnderLock`) |
-| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) | Auto-join into the nearest compatible running trip, older trip on a tie (D-014; was the oldest pool); best effort: under contention the ride keeps waiting; the driver can also accept compatible waiting requests, and a new trip starts where the car is | Implemented |
+| Joining a pool | Driver confirms every join; seat hold with 60 s timeout (option Y) → auto-join into the nearest running trip, one request at a time (D-014) | **Batch matching** (D-023, v1.4.0): every 2 s all waiting requests are placed in the running trips together (RV/RTV graph, exact search), most seats first, nearest car on a tie; each seat still taken under the car's lock. A trip's first passenger still goes through a driver (D-020), and a new trip starts where the car is | Implemented |
 | Joins after start | Allowed from stops ahead (option C) → deferred (D-003) | Allowed from any stop ahead until the seats are full; seats freed at drop-off (D-008) | Implemented (tested: join on the way, passed stop refused, depart vs join race) |
 | Status model | Per-passenger states → one shared set for the whole pool (D-003) | Same status names, per passenger: MATCHED → DRIVER_ARRIVED (car at their stop) → STARTED (on board) → COMPLETED (dropped off); pool status + `current_stop` say where the car is (D-008) | Implemented (`TripService`: arrive, pickup, dropoff, no-show, depart, cancel) |
 | Fare | ৳30 + ৳20 per hop, locked at request → −20% if 2+ passengers at STARTED, locked at STARTED (D-003) | (৳30 + direct km × ৳15) × seats; −20% if another passenger shared at least one hop; estimate = solo price (never exceeded); locked at drop-off (D-008) | Implemented (tested ৳60 / ৳72 / ৳108 shared, ৳75 alone, ৳75 when a seat is only handed over) |
@@ -1166,3 +1166,87 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
 - after the first accept, a rider who fits (a stop ahead) is seated, and one who needs 2 seats when 1 is left keeps waiting
 - race, 5 rounds: a request saved at the very moment of the accept always ends in that trip, with seats right
 - Full suite: 77 unit and 88 end-to-end tests pass.
+
+## D-023: Batch matching replaces one-request-at-a-time seating (2026-10-05, v1.4.0, after submission)
+
+**Context (his request).** After studying matching styles, he asked to replace greedy matching with the batch method from Alonso-Mora et al., *On-demand high-capacity ride-sharing via dynamic trip-vehicle assignment* (PNAS 2017), with the README updated, every earlier feature re-tested, and the work documented. This is post-submission work, released as v1.4.0. His two calls:
+- **Where:** master, as v1.4.0, through the usual PR → pre-release → release → master flow, with the README saying clearly that it came after the submission.
+- **Scope:** only running trips. A trip's first passenger still goes to every idle driver who can take them, and the first accept wins (D-020). The matcher seats everyone after that (D-022).
+
+**The problem with greedy.** Each request was placed the moment it arrived, in the nearest car that fitted, and never moved. So an early rider could take a seat that a better plan needed for someone else. Example (now a unit and an e2e test):
+- Jashim's car is at Banani and Rahim's is at Uttara, each with 2 free seats. Four riders wait: R1 Banani → Mohakhali, R2 Banani → Gulshan 1, R3 Mohakhali → Bashundhara (1 seat each), and R4 Uttara → Banani (2 seats).
+- **One at a time:** R1 and R2 go to Jashim (nearest), then R3 goes to Rahim. R4 is then 1 seat short. 3 seats moved.
+- **Together:** R4 can only ride with Rahim (Jashim has passed Uttara), so Rahim's seats are kept for R4, and R3 waits. 4 seats moved.
+- Greedy cannot see that R4 has no other car, because R4 had not arrived when R3 was placed.
+
+**A second reason: one matcher instead of four triggers.** Riders were seated automatically at four separate moments, each with its own code:
+- a new request (auto-join)
+- a freed seat (D-017)
+- a driver's accept (D-022)
+- a driver's cancel (D-021)
+D-021 and D-022 were both bugs of the same kind: one moment had been missed. With one matcher that runs every few seconds over every waiting request and every free seat, that kind of bug cannot happen.
+
+**Decision (built).**
+- **`MatcherService`** runs a round every `MATCH_INTERVAL_MS` (default 2 s; 250 ms to 60 s allowed, checked at start-up). A round:
+  1. reads every running trip with a free seat on an online car, and the 50 oldest waiting requests;
+  2. plans (`pooling/assignment.ts`, pure, no database);
+  3. applies the plan.
+- **Plan, step 1 (RV):** which running trip could take which request on its own: the same R1–R4 rule (`joinProblem`) used everywhere else.
+- **Plan, step 2 (RTV):** for each trip, every group of requests it could take together, built one size at a time, with the paper's pruning rule (a group is only checked if every smaller group inside it fits).
+  - Honest note: with today's single seat counter per trip, a group fits exactly when each member fits and the seats add up. So the rule never removes more than the seat check does.
+  - It is kept because it is the method's general rule, and `groupFits` is the one place that changes when seats are counted per stretch of the route (a planned improvement). From then on the rule actually prunes.
+- **Plan, step 3 (choose):** at most one group per trip, each request in at most one group, best score. The score is compared field by field:
+  1. seats of requests waiting 5+ minutes (aging, as before, so nobody waits for ever);
+  2. seats filled;
+  3. minus the km cars drive to the pickups (nearest car first, as in D-014);
+  4. seconds the seated riders waited (the older request wins a tie).
+  - Trips are visited oldest first, so the older trip wins an exact tie (D-014).
+  - Solved exactly by branch and bound: a branch is dropped when even its best possible rest could not beat the plan already found.
+  - A step budget (200,000) bounds the time. If it runs out, the plan is still valid but marked not proven best, and a warning is logged.
+- **On a one-way route the costly part of the paper does not exist.** Choosing the order of pickups and drop-offs is what makes the general problem expensive, and here the route fixes that order. A group's cost is a sum.
+- **Apply:** each trip in the plan is applied in its own transaction under that car's lock, and each seat goes through `PoolingService.joinUnderLock` inside a savepoint.
+  - So a stale plan can only **miss** a seat, never give a wrong one. If the ride was cancelled, a driver took it, or the car moved on, that one seat is undone, the others stand, and the ride waits for the next round.
+  - A transaction still holds at most one vehicle lock, so the deadlock rule is unchanged.
+  - A busy car (`BUSY`) or a connection pool that is momentarily full (Prisma P2024/P2028) skips only that trip for the round; it does not stop the round.
+- **One round at a time in an instance.** With several instances two rounds could overlap. That is still correct, because the lock and the compare-and-set decide every seat, so the cost is only repeated work. Electing one instance per round is the step for that scale.
+- **Who sees what (needed to keep the plan intact):** a waiting request that some running trip can take belongs to the matcher, so it is in **no** driver's list.
+  - Otherwise, in the window before the next round, an idle driver could start a fresh trip for a rider a running car had room for.
+  - Worse, a running car's driver could tap a rider the plan wanted elsewhere, which is exactly the greedy mistake again.
+  - Drivers see only what an idle car alone can serve: a trip's first passenger. A driver with a running trip therefore always sees an empty list, and the screen now says riders join automatically.
+  - Accepting through the API is still checked under the lock as before.
+- **Live updates:** a round that seats anyone publishes the same SSE hint as an HTTP action (D-020), so open screens refetch.
+
+**What changed for users and the API:**
+- `POST /rides` now always answers `REQUESTED`. If a running trip fits, the seat follows within one round (about 1 s on average with a 2 s window), and the passenger's screen updates over SSE ("Finding you a seat…" while waiting).
+- The history reason for every automatic seat is "Joined a Tesla on the way automatically".
+- A freed seat is now offered at the next round instead of inside the cancel's or drop-off's own transaction (D-017 keeps its rule, not its timing).
+- D-021's "oldest first" is now part of the score: seats first, then the older request. In D-021's own case (2 seats free, a 2-seat and a 1-seat rider) the result is the same.
+
+**Options considered:**
+- **Keep greedy:** simplest, and at low density it gives the same answer. It was kept until now for that reason (README). Replaced on his call, and because the single matcher also removes the missing-trigger class of bug.
+- **An ILP solver library** (GLPK, CBC): the textbook step 3. Not needed at this size: an exact search over a few dozen requests is milliseconds (measured: plan 2–7 ms, apply ≤ 12 ms). It also adds no dependency and keeps every result checkable in a unit test. `planAssignment` is the seam where a solver would go at city scale.
+- **A separate matcher process with a queue:** not needed with one API instance. It is the scale-up step together with a leader per round.
+- **Also seating idle cars automatically** (the full paper): asked, and rejected for now, because it would remove the driver's choice of the first passenger (D-020).
+
+**Tests:**
+- `pooling/assignment.spec.ts` (12, unit):
+  - the example above (4 seats, versus 3 one at a time)
+  - nearest car, older-trip tie, passed pickup, aging, idle-only requests
+  - the groups and the boarding order
+  - the step budget
+  - **400 random cases checked against an independent brute force:** every possible way to place each rider. The plan never breaks a rule and always reaches the best score. A deliberately broken bound made 4 of these tests fail, so the check really catches mistakes.
+- `test/batch-matching.e2e-spec.ts` (6, new):
+  - the example with real cars
+  - a ride cancelled after the plan was made is skipped and the rest stands
+  - a car that left the pickup after the plan does not get that rider
+  - two rounds never overlap
+  - race, 5 rounds: an idle driver accepts at the instant the matcher seats the same rider elsewhere, and exactly one wins with no empty trip left behind
+  - a round that seats someone publishes a live hint, and one that seats nobody stays quiet
+- **Existing races rewritten** so they race the real thing, not a path that no longer exists:
+  - the PRD last-seat race and the 20-rider race now apply conflicting plans in parallel through the real write path (several matchers sure the seat is theirs); always exactly one winner and 3 seats
+  - leave-a-stop versus being seated there now races the matcher against the driver's depart, over 3 rounds. Before the rewrite it still passed, but no longer tested anything, because a request no longer seats itself.
+  - two cars freeing a seat now races two matchers seating one rider in both cars
+  - a rider's cancel now races the round that seats her
+- **Every other test now runs a match round wherever it used to rely on instant seating;** what each test proves is unchanged.
+- Totals: 86 unit and 95 end-to-end tests pass.
+- **Flakes, explained this time:** test runs late at night stalled for minutes on random tests, and even an outside `psql` hung. `pmset -g log` showed the Mac going in and out of "Maintenance Sleep" (awake about 8 s, asleep 2–86 s). Runs are now done under `caffeinate`, and pass every time.

@@ -5,14 +5,15 @@ import {
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
 
 // The driver cancels a trip (before the first pickup) with the later features in place:
-// no fee for the riders (D-018), and they are offered again at once, the same way a new
-// request is: a running car that fits seats them automatically, otherwise every idle car
-// that can take them sees them (D-020, D-021).
+// no fee for the riders (D-018), and they are offered again the same way a new request is:
+// the next match round seats them in a running car that fits, otherwise every idle car that
+// can take them sees them (D-020, D-021, D-023).
 describe('Driver cancels a trip (e2e)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
@@ -85,7 +86,10 @@ describe('Driver cancels a trip (e2e)', () => {
     const shirinRide = await shirin
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 });
-    expect(shirinRide.body.driver.name).toBe('Jashim');
+    await runMatcher(app);
+    expect((await shirin.get('/rides/current')).body.ride.driver.name).toBe(
+      'Jashim',
+    );
 
     // Rahim's trip at Banani has Rafiq and two free seats.
     await createDriver(app, {
@@ -104,9 +108,11 @@ describe('Driver cancels a trip (e2e)', () => {
       .post(`/driver/requests/${rafiqRide.body.id}/accept`)
       .expect(200);
 
-    // Jashim's car breaks down: Nusrat (2 seats) fits Rahim's car and is seated at once;
-    // Shirin no longer fits and waits, shown to idle cars (here Jashim's own, now idle).
+    // Jashim's car breaks down. The next round has two seats in Rahim's car for Nusrat
+    // (2 seats) and Shirin (1): it seats Nusrat, the bigger fit, and Shirin waits, shown to
+    // idle cars (here Jashim's own, now idle).
     await jashim.post('/driver/pool/cancel').expect(200);
+    await runMatcher(app);
     const nusratNow = (await nusrat.get('/rides/current')).body.ride;
     expect(nusratNow).toMatchObject({ status: 'MATCHED', coRiders: ['Rafiq'] });
     expect(nusratNow.driver.name).toBe('Rahim');

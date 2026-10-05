@@ -1,23 +1,26 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { MATCH_REASON } from '../src/rides/matcher.service.js';
 import {
+  applyInParallel,
   createDriver,
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
 
-// A freed seat goes straight to a waiting rider who fits (D-017): after a cancel, a no-show
-// or a drop-off, in the same transaction and under the same vehicle lock.
+// A freed seat goes to a waiting rider who fits (D-017): after a cancel, a no-show or a
+// drop-off, the next match round seats them (D-023), checked again under the car's lock.
 describe('Freed seats are filled automatically (e2e)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
   let BAN: string, MOH: string, GL1: string, GL2: string, BSH: string;
   const ROUNDS = 5;
   // Each race runs ROUNDS fresh databases and logins: more than vitest's 5 s default.
-  const RACE_TIMEOUT_MS = 30_000;
+  const RACE_TIMEOUT_MS = 60_000;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -61,7 +64,8 @@ describe('Freed seats are filled automatically (e2e)', () => {
       .post(`/driver/requests/${nusratRide.body.id}/accept`)
       .expect(200);
     const rafiqRide = await rafiq.post('/rides').send(trip(BAN, GL1));
-    expect(rafiqRide.body.status).toBe('MATCHED');
+    await runMatcher(app);
+    expect(await statusOf(rafiqRide.body.id)).toBe('MATCHED');
     expect((await jashim.get('/driver/pool')).body.pool.seatsTaken).toBe(3);
     return {
       jashim,
@@ -91,17 +95,16 @@ describe('Freed seats are filled automatically (e2e)', () => {
 
   it('a cancel frees a seat and a waiting rider who fits gets it at once', async () => {
     const { jashim, rafiq, shirin, rafiqRideId } = await bulletFull();
-    const shirinRide = await shirin.post('/rides').send(trip(MOH, BSH));
-    expect(shirinRide.body.status).toBe('REQUESTED'); // Bullet is full
+    await shirin.post('/rides').send(trip(MOH, BSH));
+    expect((await runMatcher(app)).seated).toBe(0); // Bullet is full
 
     await rafiq.post(cancel(rafiqRideId)).expect(200);
+    expect((await runMatcher(app)).seated).toBe(1);
 
     const shirinNow = (await shirin.get('/rides/current')).body.ride;
     expect(shirinNow.status).toBe('MATCHED');
     expect(shirinNow.coRiders).toEqual(['Nusrat']);
-    expect(shirinNow.history.at(-1).reason).toBe(
-      'A seat came free in a Tesla on the way: joined automatically',
-    );
+    expect(shirinNow.history.at(-1).reason).toBe(MATCH_REASON);
     expect((await jashim.get('/driver/pool')).body.pool.seatsTaken).toBe(3);
     await expectSeatsConsistent();
   });
@@ -112,6 +115,7 @@ describe('Freed seats are filled automatically (e2e)', () => {
     await jashim.post('/driver/pool/arrive').expect(200);
 
     await jashim.post(passenger(rafiqRideId, 'no-show')).expect(200);
+    await runMatcher(app);
 
     expect(await statusOf(shirinRide.body.id)).toBe('MATCHED');
     await expectSeatsConsistent();
@@ -127,6 +131,7 @@ describe('Freed seats are filled automatically (e2e)', () => {
     const behind = await shirin.post('/rides').send(trip(BAN, GL1));
     await jashim.post('/driver/pool/arrive').expect(200); // Mohakhali
     await jashim.post(passenger(nusratRideId, 'dropoff')).expect(200);
+    expect((await runMatcher(app)).seated).toBe(0);
 
     expect(await statusOf(behind.body.id)).toBe('REQUESTED');
     expect((await jashim.get('/driver/pool')).body.pool.seatsTaken).toBe(1);
@@ -142,6 +147,7 @@ describe('Freed seats are filled automatically (e2e)', () => {
 
     // Nearest first when nobody has waited long.
     await rafiq.post(cancel(rafiqRideId)).expect(200);
+    await runMatcher(app);
     expect(await statusOf(near.body.id)).toBe('MATCHED');
     expect(await statusOf(far.body.id)).toBe('REQUESTED');
 
@@ -151,20 +157,21 @@ describe('Freed seats are filled automatically (e2e)', () => {
       data: { createdAt: new Date(Date.now() - 6 * 60_000) },
     });
     const rafiqAgain = await rafiq.post('/rides').send(trip(MOH, GL1));
-    expect(rafiqAgain.body.status).toBe('REQUESTED'); // full again
+    expect((await runMatcher(app)).seated).toBe(0); // full again
     await mitu.post(cancel(near.body.id)).expect(200);
+    await runMatcher(app);
     expect(await statusOf(far.body.id)).toBe('MATCHED');
     expect(await statusOf(rafiqAgain.body.id)).toBe('REQUESTED');
     await expectSeatsConsistent();
   });
 
   it(
-    'race: two cars free a seat at the same moment; the rider ends in exactly one',
+    'race: two matchers seat the same rider in two cars at once; she ends in exactly one',
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
         await fresh();
         const { rafiq, rafiqRideId, shirin } = await bulletFull();
-        // Rahim's car, also full at Banani on the same route.
+        // Rahim's car, also full at Banani on the same route: Mitu 2 seats, Lima 1.
         await createDriver(app, {
           name: 'Rahim',
           email: 'rahim@teslapool.test',
@@ -174,21 +181,40 @@ describe('Freed seats are filled automatically (e2e)', () => {
         const rahim = await loginAs(app, 'rahim@teslapool.test');
         await rahim.post('/driver/online').expect(200);
         await createPassenger('Mitu', 'mitu@teslapool.test');
+        await createPassenger('Lima', 'lima@teslapool.test');
         const mitu = await loginAs(app, 'mitu@teslapool.test');
-        const mituRide = await mitu.post('/rides').send(trip(BAN, GL1, 3));
+        const lima = await loginAs(app, 'lima@teslapool.test');
+        const mituRide = await mitu.post('/rides').send(trip(BAN, GL1, 2));
         await rahim
           .post(`/driver/requests/${mituRide.body.id}/accept`)
           .expect(200);
+        const limaRide = await lima.post('/rides').send(trip(BAN, GL1));
+        await runMatcher(app); // Bullet is full, so Lima goes to Rahim's car
+        expect(await statusOf(limaRide.body.id)).toBe('MATCHED');
 
         // Shirin waits at Mohakhali; both cars are full.
         const shirinRide = await shirin.post('/rides').send(trip(MOH, BSH));
-        expect(shirinRide.body.status).toBe('REQUESTED');
+        expect((await runMatcher(app)).seated).toBe(0);
 
-        // One seat frees in each car at the same moment.
+        // One seat frees in each car at the same moment; both trips keep running.
         await Promise.all([
           rafiq.post(cancel(rafiqRideId)),
-          mitu.post(cancel(mituRide.body.id)),
+          lima.post(cancel(limaRide.body.id)),
         ]);
+
+        // Two matchers, one for each car, both seat Shirin at the same instant.
+        const trips = await prisma.pool.findMany({
+          where: { status: { in: ['MATCHED', 'DRIVER_ARRIVED', 'STARTED'] } },
+        });
+        expect(trips).toHaveLength(2);
+        await applyInParallel(
+          app,
+          trips.map((t) => ({
+            vehicleId: t.vehicleId,
+            poolId: t.id,
+            rideId: shirinRide.body.id as string,
+          })),
+        );
 
         const seats = await prisma.poolMember.count({
           where: { rideRequestId: shirinRide.body.id, leftAt: null },
@@ -202,16 +228,19 @@ describe('Freed seats are filled automatically (e2e)', () => {
   );
 
   it(
-    'race: the waiting rider cancels while a seat frees for her: she ends cancelled, seats right',
+    'race: the waiting rider cancels while the matcher seats her: she ends cancelled, seats right',
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
         await fresh();
         const { rafiq, rafiqRideId, shirin } = await bulletFull();
         const shirinRide = await shirin.post('/rides').send(trip(MOH, BSH));
 
+        await rafiq.post(cancel(rafiqRideId)).expect(200);
+
+        // Her cancel and the round that seats her, at the same moment.
         const [shirinCancel] = await Promise.all([
           shirin.post(cancel(shirinRide.body.id)),
-          rafiq.post(cancel(rafiqRideId)),
+          runMatcher(app),
         ]);
         expect(shirinCancel.status).toBe(200);
         expect(await statusOf(shirinRide.body.id)).toBe('CANCELLED');

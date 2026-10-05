@@ -81,8 +81,8 @@ export class RidesService {
       throw error;
     }
 
-    // Join a Tesla that will pass the pickup, if one fits; otherwise wait for a driver.
-    await this.poolingService.tryAutoJoin(ride);
+    // The ride waits as REQUESTED. The next match round (every few seconds, D-023) seats it
+    // in a running trip if one fits; otherwise idle drivers see it (D-020).
     return this.getRide(passengerId, ride.id);
   }
 

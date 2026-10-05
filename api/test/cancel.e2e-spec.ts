@@ -4,6 +4,7 @@ import {
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
@@ -60,7 +61,10 @@ describe('Passenger cancel (e2e)', () => {
     const rafiqRide = await rafiq
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
-    expect(rafiqRide.body.status).toBe('MATCHED');
+    await runMatcher(app); // he fits Jashim's running trip (D-023)
+    expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
     return { ...setup, rafiq, rafiqRideId: rafiqRide.body.id as string };
   }
 

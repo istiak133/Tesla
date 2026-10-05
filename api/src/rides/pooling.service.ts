@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { cancellationFeePaisa } from '../fares/cancellation.js';
 import { tripEarnings } from '../fares/earnings.js';
 import {
@@ -6,11 +6,6 @@ import {
   type DistanceLookup,
 } from '../geography/geography.repository.js';
 import { Pool, RideRequest, RideStatus } from '../generated/prisma/client.js';
-import {
-  approachKm,
-  orderWaitingList,
-  rankJoinCandidates,
-} from '../pooling/matching.js';
 import { joinProblem, tripStops } from '../pooling/route-plan.js';
 import { RideError } from './ride.errors.js';
 import {
@@ -29,8 +24,6 @@ import {
  */
 @Injectable()
 export class PoolingService {
-  private readonly logger = new Logger(PoolingService.name);
-
   constructor(
     private readonly ridesRepository: RidesRepository,
     private readonly geographyRepository: GeographyRepository,
@@ -42,55 +35,6 @@ export class PoolingService {
    */
   async distance(): Promise<DistanceLookup> {
     return this.geographyRepository.loadDistanceLookup();
-  }
-
-  /**
-   * Automatic join (docs/assumptions.md §4.4, D-014): put a new request into the active
-   * trip whose car reaches the pickup soonest (fewest km along its route; oldest trip on
-   * a tie). Returns true if it joined one.
-   */
-  async tryAutoJoin(ride: RideRequest): Promise<boolean> {
-    // Found and ranked without a lock; every condition is checked again under the lock.
-    const candidates = rankJoinCandidates(
-      await this.ridesRepository.listJoinablePools(ride.pickupZoneId),
-      ride,
-    );
-
-    for (const candidate of candidates) {
-      try {
-        await this.ridesRepository.withVehicleLock(
-          candidate.vehicleId,
-          async (tx) => {
-            const pool = await tx.pool.findUniqueOrThrow({
-              where: { id: candidate.poolId },
-            });
-            const current = await tx.rideRequest.findUniqueOrThrow({
-              where: { id: ride.id },
-            });
-            await this.joinUnderLock(
-              tx,
-              pool,
-              current,
-              null,
-              'Joined a Tesla on the way automatically',
-            );
-          },
-        );
-        return true;
-      } catch (error) {
-        if (error instanceof RideError && error.code === 'BUSY') {
-          // Joining is best effort: under heavy contention the ride simply keeps
-          // waiting and appears in drivers' lists. It was already created.
-          return false;
-        }
-        if (error instanceof RideError) {
-          // This pool did not fit (full, wrong direction, already passed). Try the next.
-          continue;
-        }
-        throw error;
-      }
-    }
-    return false;
   }
 
   /**
@@ -254,125 +198,8 @@ export class PoolingService {
       },
     });
 
-    await this.fillFreedSeats(tx, poolId);
+    // The freed seat is offered to waiting riders by the next match round (D-023).
     await this.closeIfEmpty(tx, poolId);
-  }
-
-  /**
-   * A seat was just freed in this trip (a cancel, a no-show or a drop-off): give it at once
-   * to riders who are waiting and fit (D-017), best first, in the same transaction and
-   * under the same vehicle lock. The order is the driver's list order: riders waiting
-   * 5+ minutes first, then the nearest pickups.
-   *
-   * Best effort, like auto-join: it runs inside a savepoint, so if anything goes wrong
-   * the cancel or drop-off that freed the seat still succeeds and the riders keep waiting.
-   */
-  async fillFreedSeats(
-    tx: Tx,
-    poolId: string,
-    reason = 'A seat came free in a Tesla on the way: joined automatically',
-  ): Promise<void> {
-    await tx.$executeRawUnsafe('SAVEPOINT fill_freed_seats');
-    try {
-      await this.seatWaitingRiders(tx, poolId, reason);
-      await tx.$executeRawUnsafe('RELEASE SAVEPOINT fill_freed_seats');
-    } catch (error) {
-      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT fill_freed_seats');
-      this.logger.warn(
-        { poolId, error: error instanceof Error ? error.message : error },
-        'could not fill a freed seat; the riders keep waiting',
-      );
-    }
-  }
-
-  /**
-   * A driver just accepted a request (D-022): riders who were already waiting and fit this
-   * car's trip get a seat now, exactly as if they had asked after the trip started. Only the
-   * first passenger of a trip goes through the driver; everyone after that is seated by the
-   * system.
-   *
-   * Runs after the accept has committed, in its own transaction under the car's lock.
-   * Inside the accept it would miss a request saved while the accept was still committing:
-   * that request's own auto-join cannot see the new trip yet. Run after the commit, one of
-   * the two always sees the other.
-   *
-   * Best effort, like auto-join: if the car is busy, the riders keep waiting and stay in
-   * the driver's list.
-   */
-  async fillTrip(vehicleId: string): Promise<void> {
-    try {
-      await this.ridesRepository.withVehicleLock(vehicleId, async (tx) => {
-        const pool = await tx.pool.findFirst({
-          where: { vehicleId, status: { in: ACTIVE_POOL_STATUSES } },
-        });
-        if (pool !== null) {
-          await this.fillFreedSeats(
-            tx,
-            pool.id,
-            'Joined a Tesla on the way automatically',
-          );
-        }
-      });
-    } catch (error) {
-      if (error instanceof RideError && error.code === 'BUSY') {
-        return;
-      }
-      throw error;
-    }
-  }
-
-  private async seatWaitingRiders(
-    tx: Tx,
-    poolId: string,
-    reason: string,
-  ): Promise<void> {
-    let pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
-    const vehicle = await tx.vehicle.findUniqueOrThrow({
-      where: { id: pool.vehicleId },
-    });
-    if (
-      !ACTIVE_POOL_STATUSES.includes(pool.status) ||
-      !vehicle.isOnline ||
-      pool.seatsTaken >= pool.seatCapacity
-    ) {
-      return;
-    }
-
-    // Riders waiting at this stop or further along the route: the car never goes back.
-    const stops = await this.ridesRepository.findRouteStops(tx, pool.routeId);
-    const ahead = stops.filter((stop) => stop.position >= pool.currentStop);
-    const waiting = await this.ridesRepository.lockWaitingRides(
-      tx,
-      ahead.map((stop) => stop.zoneId),
-    );
-
-    const listed = waiting.map((ride) => {
-      const positions = tripStops(stops, ride);
-      return {
-        ride,
-        canAccept: joinProblem(pool, stops, ride) === null,
-        pickupKmAhead:
-          positions === null
-            ? null
-            : approachKm(stops, pool.currentStop, positions.pickupStop),
-        requestedAt: ride.createdAt,
-      };
-    });
-
-    for (const candidate of orderWaitingList(listed, new Date())) {
-      if (!candidate.canAccept) {
-        break; // the list puts every rider who fits first
-      }
-      // Seats change with every rider seated, so check this one against the pool as it is now.
-      if (joinProblem(pool, stops, candidate.ride) !== null) {
-        continue;
-      }
-      await this.joinUnderLock(tx, pool, candidate.ride, null, reason);
-      pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
-      if (pool.seatsTaken >= pool.seatCapacity) {
-        return;
-      }
-    }
   }
 
   /**

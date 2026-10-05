@@ -1,9 +1,11 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
+import { MATCH_REASON } from '../src/rides/matcher.service.js';
 import {
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
 } from './helpers/test-app.js';
 
@@ -106,11 +108,13 @@ describe('A full trip, end to end (e2e)', () => {
       seatsTaken: 1,
     });
 
-    // ---------- Rafiq joins at once; Karim goes the other way ----------
+    // ---------- Rafiq joins at the next round; Karim goes the other way ----------
     const rafiqRide = await rafiq
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
-    expect(rafiqRide.body).toMatchObject({
+    expect(rafiqRide.body.status).toBe('REQUESTED');
+    await runMatcher(app);
+    expect((await rafiq.get('/rides/current')).body.ride).toMatchObject({
       status: 'MATCHED',
       coRiders: ['Nusrat'],
       driver: { name: 'Jashim', vehicleName: 'Bullet' },
@@ -154,10 +158,11 @@ describe('A full trip, end to end (e2e)', () => {
     const shirinRide = await shirin
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: BSH, seats: 1 });
-    expect(shirinRide.body).toMatchObject({
-      status: 'MATCHED',
-      estimatedFarePaisa: 13500,
-    });
+    expect(shirinRide.body.estimatedFarePaisa).toBe(13500);
+    await runMatcher(app);
+    expect((await shirin.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
     expect((await jashim.get('/driver/pool')).body.pool.seatsTaken).toBe(3);
 
     // Karim gives up on Uttara and asks for Mohakhali → Gulshan 1: no seat yet.
@@ -166,6 +171,7 @@ describe('A full trip, end to end (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 });
     expect(karimSecond.body.status).toBe('REQUESTED');
+    expect((await runMatcher(app)).seated).toBe(0); // Bullet is full
     // Bullet is full, so it is not in Jashim's list until a seat frees (D-020).
     expect((await jashim.get('/driver/requests')).body).toEqual([]);
 
@@ -173,16 +179,17 @@ describe('A full trip, end to end (e2e)', () => {
     expect((await jashim.post('/driver/offline')).status).toBe(409);
     expect((await jashim.post('/driver/pool/cancel')).status).toBe(409);
 
-    // ---------- Mohakhali: Nusrat gets off, and her seat goes straight to Karim (D-017) ----------
+    // ---------- Mohakhali: Nusrat gets off; the next round gives her seat to Karim (D-017) ----------
     await jashim.post('/driver/pool/arrive').expect(200);
     expect((await jashim.post('/driver/pool/depart')).status).toBe(409); // people to handle here
     await jashim
       .post(`/driver/pool/passengers/${nusratRide.body.id}/dropoff`)
       .expect(200);
+    await runMatcher(app);
     const karimNow = (await karim.get('/rides/current')).body.ride;
     expect(karimNow.status).toBe('DRIVER_ARRIVED'); // seated, and the car is at his stop
     expect(karimNow.history.map((e: { reason: string }) => e.reason)).toContain(
-      'A seat came free in a Tesla on the way: joined automatically',
+      MATCH_REASON,
     );
     await jashim
       .post(`/driver/pool/passengers/${shirinRide.body.id}/pickup`)
