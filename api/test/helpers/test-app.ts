@@ -14,6 +14,13 @@ export async function createTestApp(): Promise<NestExpressApplication> {
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
   await app.init();
+  // Listen once, on 127.0.0.1 itself. Left to itself, SuperTest listens on "::" for every
+  // batch of requests and then connects to 127.0.0.1:<port>. On macOS a "::" listener can
+  // share a port that another program holds on 127.0.0.1 (editor helpers do), and the
+  // connection then reaches that program instead: the rare, unexplained 401s and 404s in
+  // the middle of a test (D-021). Binding 127.0.0.1 makes the kernel give a port that is
+  // free there, and SuperTest reuses this server instead of opening its own.
+  await app.listen(0, '127.0.0.1');
   return app;
 }
 
@@ -127,4 +134,45 @@ export async function createDriver(
       currentZoneId: zone.id,
     },
   });
+}
+
+// ---------- batch matching (D-023) ----------
+
+import { MatcherService } from '../../src/rides/matcher.service.js';
+
+/**
+ * Runs one match round now. In tests the timer is off, so a test decides exactly when the
+ * waiting requests are matched, and what it checks never depends on timing.
+ */
+export async function runMatcher(app: NestExpressApplication) {
+  return app.get(MatcherService).runOnce();
+}
+
+/**
+ * Several matchers racing for seats at once: each seat here is its own one-seat plan, and
+ * all are applied in parallel through the real write path (the car's lock, R1–R4 again,
+ * the compare-and-set and the conditional seat update). This is what happens if two API
+ * instances run a round at the same moment, and it is the hardest form of the
+ * "same instant" race: the plans themselves disagree.
+ */
+export async function applyInParallel(
+  app: NestExpressApplication,
+  seats: { vehicleId: string; poolId: string; rideId: string }[],
+) {
+  const matcher = app.get(MatcherService);
+  return Promise.all(
+    seats.map((seat) =>
+      matcher.apply({
+        trips: [
+          {
+            vehicleId: seat.vehicleId,
+            poolId: seat.poolId,
+            requestIds: [seat.rideId],
+          },
+        ],
+        seatsServed: 1,
+        optimal: true,
+      }),
+    ),
+  );
 }

@@ -5,6 +5,7 @@ import {
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
@@ -134,7 +135,7 @@ describe('Matching by the car’s position (e2e)', () => {
     expect(right.body.vehicle.route.name).toBe('Uttara → Dhanmondi');
   });
 
-  it('B: auto-join takes the nearest car, not the oldest trip', async () => {
+  it('B: matching takes the nearest car, not the oldest trip', async () => {
     // Two cars on Uttara → Bashundhara, both already on a trip:
     // Rahim's trip stands at Banani, Jashim's older trip is still at Uttara, 12 km before it.
     await createDriver(app, {
@@ -170,12 +171,15 @@ describe('Matching by the car’s position (e2e)', () => {
       data: { createdAt: new Date(Date.now() - 60 * 60_000) },
     });
 
-    // Nusrat asks at Banani: Rahim is there (0 km), Jashim is 12 km away.
-    const n = await nusrat
+    // Nusrat asks at Banani: Rahim is there (0 km), Jashim is 12 km away. Seats are equal
+    // either way, so the match round picks the car with the shorter drive to her.
+    await nusrat
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 });
-    expect(n.body.driver.name).toBe('Rahim');
-    expect(n.body.route.carStop).toBe(1);
+    await runMatcher(app);
+    const n = (await nusrat.get('/rides/current')).body.ride;
+    expect(n.driver.name).toBe('Rahim');
+    expect(n.route.carStop).toBe(1);
   });
 
   it('C: the driver’s list puts takeable, nearby pickups first', async () => {

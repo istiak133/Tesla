@@ -4,6 +4,7 @@ import {
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
@@ -48,7 +49,11 @@ describe('Trip lifecycle (e2e)', () => {
     const rafiqRide = await rafiq
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
-    expect(rafiqRide.body.status).toBe('MATCHED');
+    // Rafiq fits Bullet's running trip: the next match round seats him (D-023).
+    await runMatcher(app);
+    expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
 
     return {
       jashim,
@@ -156,7 +161,10 @@ describe('Trip lifecycle (e2e)', () => {
     const shirinRide = await shirin
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 });
-    expect(shirinRide.body.status).toBe('MATCHED');
+    await runMatcher(app);
+    expect((await shirin.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
 
     // At Mohakhali the driver lets Shirin in before Nusrat is out: still no shared hop.
     await jashim.post('/driver/pool/arrive').expect(200);
