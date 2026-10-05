@@ -4,6 +4,7 @@ import { DriverController } from '../driver/driver.controller.js';
 import { DriverService } from '../driver/driver.service.js';
 import { TripService } from '../driver/trip.service.js';
 import { GeographyModule } from '../geography/geography.module.js';
+import { MatcherService } from './matcher.service.js';
 import { PoolingService } from './pooling.service.js';
 import { RidesController } from './rides.controller.js';
 import { RidesRepository } from './rides.repository.js';
@@ -15,6 +16,7 @@ import { RidesService } from './rides.service.js';
   providers: [
     RidesRepository,
     PoolingService,
+    MatcherService,
     RidesService,
     DriverService,
     TripService,

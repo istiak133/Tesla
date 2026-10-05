@@ -1,10 +1,12 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { PrismaService } from '../src/database/prisma.service.js';
 import {
+  applyInParallel,
   createPassengers,
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
@@ -15,6 +17,8 @@ describe('Ride requests and pooling (e2e)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
   let BAN: string, MOH: string, GL1: string, UTT: string, BSH: string;
+  // Race tests run several fresh databases each: more than the default per-test limit.
+  const RACE_TIMEOUT_MS = 60_000;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -61,17 +65,22 @@ describe('Ride requests and pooling (e2e)', () => {
     expect(accepted.status).toBe(200);
     expect(accepted.body.pool.seatsTaken).toBe(1);
 
-    // Rafiq (Banani → Gulshan 1) is on the same route ahead: he joins at once.
-    const rafiqRide = await rafiq
+    // Rafiq (Banani → Gulshan 1) is on the same route ahead. His request waits for the
+    // next match round (D-023), which seats him in Bullet without anyone accepting.
+    const rafiqRequest = await rafiq
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
-    expect(rafiqRide.body.status).toBe('MATCHED');
-    expect(rafiqRide.body.driver).toEqual({
+    expect(rafiqRequest.body.status).toBe('REQUESTED');
+    expect((await runMatcher(app)).seated).toBe(1);
+
+    const rafiqRide = (await rafiq.get('/rides/current')).body.ride;
+    expect(rafiqRide.status).toBe('MATCHED');
+    expect(rafiqRide.driver).toEqual({
       name: 'Jashim',
       vehicleName: 'Bullet',
     });
-    expect(rafiqRide.body.coRiders).toEqual(['Nusrat']);
-    expect(rafiqRide.body.route).toMatchObject({
+    expect(rafiqRide.coRiders).toEqual(['Nusrat']);
+    expect(rafiqRide.route).toMatchObject({
       name: 'Uttara → Bashundhara',
       pickupStop: 1, // Banani
       dropoffStop: 3, // Gulshan 1
@@ -138,10 +147,32 @@ describe('Ride requests and pooling (e2e)', () => {
       ),
     );
 
-    const matched = responses.filter((r) => r.body.status === 'MATCHED');
-    const waiting = responses.filter((r) => r.body.status === 'REQUESTED');
-    expect(matched).toHaveLength(1); // exactly one winner
-    expect(waiting).toHaveLength(19); // nobody dropped: the rest keep waiting
+    // Every request is stored and waits for a seat.
+    expect(responses.every((r) => r.body.status === 'REQUESTED')).toBe(true);
+
+    // The hardest form of the race: twenty matchers at once, each sure the last seat is
+    // its rider's, all through the real write path (D-023).
+    const bullet = await prisma.pool.findFirstOrThrow();
+    await applyInParallel(
+      app,
+      responses.map((r) => ({
+        vehicleId: bullet.vehicleId,
+        poolId: bullet.id,
+        rideId: r.body.id as string,
+      })),
+    );
+    // A normal round afterwards finds no seat left and changes nothing.
+    expect((await runMatcher(app)).seated).toBe(0);
+
+    const ids = responses.map((r) => r.body.id as string);
+    const matched = await prisma.rideRequest.count({
+      where: { id: { in: ids }, status: 'MATCHED' },
+    });
+    const waiting = await prisma.rideRequest.count({
+      where: { id: { in: ids }, status: 'REQUESTED' },
+    });
+    expect(matched).toBe(1); // exactly one winner
+    expect(waiting).toBe(19); // nobody dropped: the rest keep waiting
 
     const pool = await prisma.pool.findFirstOrThrow();
     expect(pool.seatsTaken).toBe(3);
@@ -181,9 +212,35 @@ describe('Ride requests and pooling (e2e)', () => {
           .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
       ]);
 
+      // Both requests are stored; neither has a seat yet.
+      expect([nusratRide.body.status, shirinRide.body.status]).toEqual([
+        'REQUESTED',
+        'REQUESTED',
+      ]);
+
+      // Two matchers claim the last seat at the same instant, one for each of them.
+      const bullet = await prisma.pool.findFirstOrThrow();
+      await applyInParallel(app, [
+        {
+          vehicleId: bullet.vehicleId,
+          poolId: bullet.id,
+          rideId: nusratRide.body.id,
+        },
+        {
+          vehicleId: bullet.vehicleId,
+          poolId: bullet.id,
+          rideId: shirinRide.body.id,
+        },
+      ]);
+      expect((await runMatcher(app)).seated).toBe(0);
+
       // Exactly one gets the seat; the other keeps waiting and is not lost.
-      const statuses = [nusratRide.body.status, shirinRide.body.status].sort();
-      expect(statuses).toEqual(['MATCHED', 'REQUESTED']);
+      const statuses = await Promise.all(
+        [nusrat, shirin].map(
+          async (agent) => (await agent.get('/rides/current')).body.ride.status,
+        ),
+      );
+      expect(statuses.sort()).toEqual(['MATCHED', 'REQUESTED']);
       const pool = await prisma.pool.findFirstOrThrow();
       expect(pool.seatsTaken).toBe(3);
       // The one who lost keeps waiting (still REQUESTED); Bullet is full, so it is not
@@ -256,12 +313,16 @@ describe('Ride requests and pooling (e2e)', () => {
     await bulletOnTheWay();
     const shirin = await loginAs(app, 'shirin@teslapool.test');
 
-    const ride = await shirin
+    const request = await shirin
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: BSH, seats: 1 });
-    expect(ride.body.status).toBe('MATCHED');
-    expect(ride.body.coRiders).toEqual(['Nusrat']);
-    expect(ride.body.route).toMatchObject({ carStop: 2, pickupStop: 2 });
+    expect(request.body.status).toBe('REQUESTED');
+    await runMatcher(app);
+
+    const ride = (await shirin.get('/rides/current')).body.ride;
+    expect(ride.status).toBe('MATCHED');
+    expect(ride.coRiders).toEqual(['Nusrat']);
+    expect(ride.route).toMatchObject({ carStop: 2, pickupStop: 2 });
   });
 
   it('a stop the Tesla has already passed is refused', async () => {
@@ -272,6 +333,8 @@ describe('Ride requests and pooling (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
     expect(ride.body.status).toBe('REQUESTED');
+    // The match round does not seat him either: Bullet is past his stop.
+    expect((await runMatcher(app)).seated).toBe(0);
 
     // Not listed for Bullet (D-020); accepting it anyway is refused with the reason.
     expect((await jashim.get('/driver/requests')).body).toEqual([]);
@@ -283,45 +346,60 @@ describe('Ride requests and pooling (e2e)', () => {
     });
   });
 
-  it('leaving a stop and a passenger joining at that stop never overlap', async () => {
-    const jashim = await jashimOnline();
-    const rafiq = await loginAs(app, 'rafiq@teslapool.test');
-    const shirin = await loginAs(app, 'shirin@teslapool.test');
+  it(
+    'leaving a stop and a passenger being seated at that stop never overlap',
+    async () => {
+      // Rounds, so both orders of the race get a chance to happen.
+      for (let round = 0; round < 3; round++) {
+        await resetDatabase(app);
+        await seedStoryCast(app);
+        BAN = await zoneId(app, 'BAN');
+        MOH = await zoneId(app, 'MOH');
+        GL1 = await zoneId(app, 'GL1');
+        const jashim = await jashimOnline();
+        const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+        const shirin = await loginAs(app, 'shirin@teslapool.test');
 
-    // Rafiq (Banani → Gulshan 1) is on board and Bullet is standing at Mohakhali.
-    const rafiqRide = await rafiq
-      .post('/rides')
-      .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
-    await jashim
-      .post(`/driver/requests/${rafiqRide.body.id}/accept`)
-      .expect(200);
-    await jashim.post('/driver/pool/arrive').expect(200);
-    await jashim
-      .post(`/driver/pool/passengers/${rafiqRide.body.id}/pickup`)
-      .expect(200);
-    await jashim.post('/driver/pool/depart').expect(200);
-    await jashim.post('/driver/pool/arrive').expect(200);
+        // Rafiq (Banani → Gulshan 1) is on board and Bullet is standing at Mohakhali.
+        const rafiqRide = await rafiq
+          .post('/rides')
+          .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
+        await jashim
+          .post(`/driver/requests/${rafiqRide.body.id}/accept`)
+          .expect(200);
+        await jashim.post('/driver/pool/arrive').expect(200);
+        await jashim
+          .post(`/driver/pool/passengers/${rafiqRide.body.id}/pickup`)
+          .expect(200);
+        await jashim.post('/driver/pool/depart').expect(200);
+        await jashim.post('/driver/pool/arrive').expect(200);
 
-    // Now, at the same moment: Shirin asks to be picked up at Mohakhali,
-    // and Jashim presses "leave for Gulshan 1".
-    const [shirinRide, depart] = await Promise.all([
-      shirin
-        .post('/rides')
-        .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 }),
-      jashim.post('/driver/pool/depart'),
-    ]);
+        // Shirin waits at Mohakhali. At the same moment the matcher seats her and
+        // Jashim presses "leave for Gulshan 1".
+        await shirin
+          .post('/rides')
+          .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 })
+          .expect(201);
+        const [, depart] = await Promise.all([
+          runMatcher(app),
+          jashim.post('/driver/pool/depart'),
+        ]);
+        const shirinNow = (await shirin.get('/rides/current')).body.ride;
 
-    // Exactly one of them wins. Either Shirin got in first (the car must wait for her),
-    // or the car left first (Mohakhali is now behind it and Shirin keeps waiting).
-    const shirinJoined = shirinRide.body.status === 'DRIVER_ARRIVED';
-    const carLeft = depart.status === 200;
-    expect(shirinJoined).not.toBe(carLeft);
-    if (carLeft) {
-      expect(shirinRide.body.status).toBe('REQUESTED');
-    } else {
-      expect(depart.body.code).toBe('INVALID_TRANSITION');
-    }
-  });
+        // Exactly one wins. Either she was seated first (the car must wait for her), or
+        // the car left first (Mohakhali is behind it now and she keeps waiting).
+        const shirinSeated = shirinNow.status === 'DRIVER_ARRIVED';
+        const carLeft = depart.status === 200;
+        expect(shirinSeated).not.toBe(carLeft);
+        if (carLeft) {
+          expect(shirinNow.status).toBe('REQUESTED');
+        } else {
+          expect(depart.body.code).toBe('INVALID_TRANSITION');
+        }
+      }
+    },
+    RACE_TIMEOUT_MS,
+  );
 
   it('a seat freed at a drop-off goes straight to a rider waiting there (D-017)', async () => {
     const jashim = await jashimOnline();
@@ -339,13 +417,17 @@ describe('Ride requests and pooling (e2e)', () => {
     const rafiqRide = await rafiq
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
-    expect(rafiqRide.body.status).toBe('MATCHED');
+    await runMatcher(app);
+    expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
 
-    // Shirin waits at Mohakhali: no seat yet.
+    // Shirin waits at Mohakhali: Bullet is full, so a round does not seat her yet.
     const shirinRide = await shirin
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: BSH, seats: 1 });
     expect(shirinRide.body.status).toBe('REQUESTED');
+    expect((await runMatcher(app)).seated).toBe(0);
 
     // Bullet drives to Mohakhali and Nusrat gets off: two seats are free again.
     await jashim.post('/driver/pool/arrive').expect(200);
@@ -360,8 +442,10 @@ describe('Ride requests and pooling (e2e)', () => {
     const dropped = await jashim.post(
       `/driver/pool/passengers/${nusratRide.body.id}/dropoff`,
     );
-    // Two seats came free; Shirin, standing right there, got one without anyone accepting.
-    expect(dropped.body.pool.seatsTaken).toBe(2);
+    // Two seats came free. The next round gives Shirin, standing right there, one of
+    // them without anyone accepting (D-017, D-023).
+    expect(dropped.body.pool.seatsTaken).toBe(1);
+    expect((await runMatcher(app)).seated).toBe(1);
     const shirinNow = await shirin.get('/rides/current');
     expect(shirinNow.body.ride.status).toBe('DRIVER_ARRIVED');
     expect(shirinNow.body.ride.coRiders).toEqual(['Rafiq']);

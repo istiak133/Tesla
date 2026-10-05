@@ -4,6 +4,7 @@ import {
   createTestApp,
   loginAs,
   resetDatabase,
+  runMatcher,
   seedStoryCast,
   zoneId,
 } from './helpers/test-app.js';
@@ -58,7 +59,10 @@ describe('Late-cancel fee (e2e)', () => {
     const nusratRide = await nusrat
       .post('/rides')
       .send({ pickupZoneId: MOH, dropoffZoneId: GL1, seats: 1 });
-    expect(nusratRide.body.status).toBe('MATCHED'); // joined on the way
+    await runMatcher(app); // she joins on the way (D-023)
+    expect((await nusrat.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
     return {
       jashim,
       nusrat,

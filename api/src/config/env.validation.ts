@@ -66,6 +66,13 @@ export class EnvironmentVariables {
   @Min(0)
   @Max(5)
   TRUST_PROXY_HOPS: number = 1;
+
+  // The batching window (D-023): how often waiting requests are matched to running trips,
+  // all at once. Longer gathers more requests per decision but makes riders wait longer.
+  @IsInt()
+  @Min(250)
+  @Max(60_000)
+  MATCH_INTERVAL_MS: number = 2_000;
 }
 
 export function validateEnv(

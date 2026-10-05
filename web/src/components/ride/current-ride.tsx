@@ -77,7 +77,7 @@ export function CurrentRide({ ride }: { ride: Ride }) {
             <dd className="mt-0.5 font-medium">
               {ride.driver
                 ? `${ride.driver.name} · ${ride.driver.vehicleName}`
-                : "Looking for a driver…"}
+                : "Finding you a seat…"}
             </dd>
           </div>
           <div>

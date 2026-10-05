@@ -4,9 +4,7 @@ import {
   approachKm,
   newTripStart,
   orderWaitingList,
-  rankJoinCandidates,
   stopOf,
-  type JoinCandidate,
 } from './matching.js';
 import type { Stop } from './route-plan.js';
 
@@ -76,46 +74,7 @@ describe('a new trip starts where the car is (A)', () => {
   });
 });
 
-describe('auto-join tries the nearest car first (B)', () => {
-  const at = (
-    poolId: string,
-    currentStop: number,
-    minutesAgo: number,
-  ): JoinCandidate => ({
-    poolId,
-    vehicleId: `car-${poolId}`,
-    createdAt: new Date(Date.UTC(2026, 8, 29, 8, 0) - minutesAgo * 60_000),
-    currentStop,
-    stops: UTT_BSH,
-  });
-
-  it('prefers the car closest to the pickup over the oldest trip', () => {
-    const ranked = rankJoinCandidates(
-      [at('old-at-uttara', 0, 30), at('new-at-banani', 1, 1)],
-      trip('MOH', 'GL1', 3),
-    );
-    expect(ranked.map((c) => [c.poolId, c.approachKm])).toEqual([
-      ['new-at-banani', 3],
-      ['old-at-uttara', 15],
-    ]);
-  });
-
-  it('breaks a tie by the older trip', () => {
-    const ranked = rankJoinCandidates(
-      [at('newer', 1, 1), at('older', 1, 10)],
-      trip('MOH', 'GL1', 3),
-    );
-    expect(ranked.map((c) => c.poolId)).toEqual(['older', 'newer']);
-  });
-
-  it('leaves out cars that have passed the pickup', () => {
-    const ranked = rankJoinCandidates(
-      [at('passed', 3, 5), at('coming', 1, 5)],
-      trip('MOH', 'BSH', 7),
-    );
-    expect(ranked.map((c) => c.poolId)).toEqual(['coming']);
-  });
-});
+// Auto-join's nearest-car order (B) is now part of batch matching: see assignment.spec.ts.
 
 describe('a driver’s waiting list (C)', () => {
   const now = new Date(Date.UTC(2026, 8, 29, 8, 0));
