@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="34" viewBox="0 0 150 34">
+  <rect x="0.5" y="0.5" width="149" height="33" rx="17" fill="#171411" stroke="#c8a45c"/>
+  <circle cx="20" cy="17" r="5" fill="#28c840"/>
+  <text x="34" y="22" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="1.5" fill="#f5efe3">LIVE DEMO</text>
+</svg>
