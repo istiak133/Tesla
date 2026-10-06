@@ -161,12 +161,14 @@ erDiagram
         bool is_online
         uuid route_id FK
         uuid current_zone_id FK
+        timestamptz last_seen_at "driver presence (v1.5.0)"
     }
     POOLS {
         uuid id PK
         uuid vehicle_id FK "one active per vehicle"
         uuid route_id FK
         int current_stop "where the car is"
+        timestamptz arrived_at "no-show wait (v1.5.0)"
         enum status
         int seats_taken "CHECK <= seat_capacity"
         int collected_paisa "= driver + platform"
