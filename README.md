@@ -1,6 +1,30 @@
-# 🚗 Dhaka Tesla Pool
+<p align="center">
+  <img src="docs/brand/logo.png" width="128" alt="Bullet logo"/>
+</p>
 
-**Share a seat. Split the fare. Survive Dhaka traffic.**
+<h1 align="center">Dhaka Tesla Pool</h1>
+<p align="center"><em>Ride-pooling on fixed routes across Dhaka. Share a seat. Split the fare. Survive Dhaka traffic.</em></p>
+
+<p align="center">
+  <a href="https://github.com/istiak133/Tesla/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/istiak133/Tesla/ci.yml?branch=master&style=flat-square&label=CI" alt="CI"/></a>
+  <a href="https://github.com/istiak133/Tesla/releases"><img src="https://img.shields.io/github/v/release/istiak133/Tesla?style=flat-square&label=release&color=c8a45c" alt="Release"/></a>
+  <img src="https://img.shields.io/badge/tests-106%20unit%20%C2%B7%20160%20e2e-2ea44f?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs" alt="Next.js"/>
+  <img src="https://img.shields.io/badge/NestJS-12-E0234E?style=flat-square&logo=nestjs&logoColor=white" alt="NestJS"/>
+  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL"/>
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript"/>
+  <img src="https://img.shields.io/badge/deploy-Vercel%20%C2%B7%20Render%20%C2%B7%20Neon-171411?style=flat-square" alt="Deploy"/>
+</p>
+
+<p align="center">
+  <img src="docs/brand/banner.png" alt="Dhaka Tesla Pool: the driver's trip and the passenger's ride" width="100%"/>
+</p>
+
+<p align="center">
+  <a href="https://tesla-pool-one.vercel.app" target="_blank" rel="noopener noreferrer"><img src="docs/brand/live-demo.svg" alt="Live demo" height="34"/></a>
+</p>
+
+---
 
 A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-seat **Bullet**, and passengers **Nusrat**, **Rafiq** and **Shirin**.
 
