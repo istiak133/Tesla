@@ -1,9 +1,11 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { api } from "@/lib/api";
 import { taka } from "@/lib/format";
-import type { DriverState, TripPassenger } from "@/lib/types";
+import type { DriverState, DropOffReceipt, TripPassenger } from "@/lib/types";
+import { useNow } from "@/lib/use-now";
 import { RouteLine } from "../route-line";
 import { Button, Card, EmptyState, ErrorNote, StatusBadge } from "../ui";
 
@@ -27,24 +29,38 @@ function actionKey(action: Action): string {
 
 export function CurrentTrip({ state }: { state: DriverState }) {
   const queryClient = useQueryClient();
+  // The last drop-off's amount to collect. Kept here, not in the polled state: after the last
+  // rider the trip is closed and the next poll no longer has it.
+  const [receipt, setReceipt] = useState<DropOffReceipt | null>(null);
+  // Cancelling the trip sends every rider back to waiting: it takes a second tap.
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const act = useMutation({
     mutationFn: (action: Action) =>
-      api<DriverState>(actionPath(action), { method: "POST" }),
-    onSuccess: (next) => {
+      api<DriverState & { receipt?: DropOffReceipt }>(actionPath(action), {
+        method: "POST",
+      }),
+    onSuccess: ({ receipt: collected, ...next }) => {
+      setReceipt(collected ?? null);
       queryClient.setQueryData(["driver-state"], next);
       queryClient.invalidateQueries({ queryKey: ["driver-requests"] });
       queryClient.invalidateQueries({ queryKey: ["driver-trips"] });
     },
   });
+  const now = useNow(1_000);
   const busy = (action: Action) =>
     act.isPending &&
     act.variables !== undefined &&
     actionKey(act.variables) === actionKey(action);
 
+  const collectNote = receipt !== null && (
+    <CollectNote receipt={receipt} onDone={() => setReceipt(null)} />
+  );
+
   const pool = state.pool;
   if (pool === null) {
     return (
       <Card title="Current trip">
+        {collectNote}
         <EmptyState
           title="No trip yet"
           hint={
@@ -71,7 +87,9 @@ export function CurrentTrip({ state }: { state: DriverState }) {
     (p) =>
       atStop && p.status === "STARTED" && p.dropoffStop === pool.currentStop,
   );
-  const stopIsDone = waitingHere.length === 0 && leavingHere.length === 0;
+  // Riders seated while the car stood here do not hold it (the API re-queues them on leave).
+  const stopIsDone =
+    waitingHere.every((p) => p.seatedAfterArrival) && leavingHere.length === 0;
 
   const where =
     pool.status === "MATCHED"
@@ -83,6 +101,7 @@ export function CurrentTrip({ state }: { state: DriverState }) {
   return (
     <Card title="Current trip">
       <div className="space-y-5">
+        {collectNote}
         <div className="flex items-end justify-between gap-4">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
@@ -136,17 +155,25 @@ export function CurrentTrip({ state }: { state: DriverState }) {
                   <span>
                     <span className="font-medium">{p.name}</span> gets on · to{" "}
                     {p.dropoff} · {p.seats} {p.seats === 1 ? "seat" : "seats"}
+                    {p.seatedAfterArrival && (
+                      <span className="block text-xs text-stone-500">
+                        Just joined: if you leave first, they wait for another
+                        car at no cost
+                      </span>
+                    )}
                   </span>
                   <span className="flex gap-2">
                     <Button
                       variant="secondary"
                       loading={busy({ kind: "no-show", rideId: p.rideId })}
-                      disabled={act.isPending}
+                      disabled={act.isPending || noShowWait(p, now) !== null}
                       onClick={() =>
                         act.mutate({ kind: "no-show", rideId: p.rideId })
                       }
                     >
-                      No-show
+                      {noShowWait(p, now) === null
+                        ? "No-show"
+                        : `No-show in ${noShowWait(p, now)}`}
                     </Button>
                     <Button
                       loading={busy({ kind: "pickup", rideId: p.rideId })}
@@ -199,16 +226,37 @@ export function CurrentTrip({ state }: { state: DriverState }) {
         {act.isError && <ErrorNote message={act.error.message} />}
 
         <div className="flex flex-wrap justify-end gap-2">
-          {!pool.hasPickedUp && (
-            <Button
-              variant="danger"
-              loading={busy({ kind: "cancel" })}
-              disabled={act.isPending}
-              onClick={() => act.mutate({ kind: "cancel" })}
-            >
-              Cancel trip
-            </Button>
-          )}
+          {!pool.hasPickedUp &&
+            (confirmCancel ? (
+              <>
+                <p className="self-center text-sm">
+                  Cancel the trip? Your riders go back to waiting.
+                </p>
+                <Button
+                  variant="secondary"
+                  disabled={act.isPending}
+                  onClick={() => setConfirmCancel(false)}
+                >
+                  Keep the trip
+                </Button>
+                <Button
+                  variant="danger"
+                  loading={busy({ kind: "cancel" })}
+                  disabled={act.isPending}
+                  onClick={() => act.mutate({ kind: "cancel" })}
+                >
+                  Yes, cancel trip
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="danger"
+                disabled={act.isPending}
+                onClick={() => setConfirmCancel(true)}
+              >
+                Cancel trip
+              </Button>
+            ))}
           {atStop ? (
             next !== undefined && (
               <Button
@@ -232,6 +280,49 @@ export function CurrentTrip({ state }: { state: DriverState }) {
       </div>
     </Card>
   );
+}
+
+/** "Collect ৳80 from Nusrat": shown after a drop-off until the driver taps Done. */
+function CollectNote({
+  receipt,
+  onDone,
+}: {
+  receipt: DropOffReceipt;
+  onDone: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"
+    >
+      <div>
+        <p className="font-semibold">
+          Collect {taka(receipt.totalPaisa)} from {receipt.passengerName}
+        </p>
+        <p className="mt-0.5 text-xs">
+          Fare {taka(receipt.finalFarePaisa)}
+          {receipt.shared ? " (shared, 20% off)" : ""}
+          {receipt.duesCollectedPaisa > 0 &&
+            ` + ${taka(receipt.duesCollectedPaisa)} from an earlier late cancel`}
+        </p>
+      </div>
+      <Button variant="secondary" onClick={onDone}>
+        Done
+      </Button>
+    </div>
+  );
+}
+
+/** How long until "No-show" opens, as "2:41", or null once it is open. */
+function noShowWait(passenger: TripPassenger, now: number): string | null {
+  if (passenger.noShowFrom === null) {
+    return null;
+  }
+  const seconds = Math.ceil((Date.parse(passenger.noShowFrom) - now) / 1000);
+  if (seconds <= 0) {
+    return null;
+  }
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 /** "1 on · 1 off" under each stop that still has something to do. */

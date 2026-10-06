@@ -91,6 +91,10 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      # The API client's error messages and the money and time formats (lib/).
+      - name: Unit tests
+        run: npm test
+
       - name: Production build
         run: npm run build
 

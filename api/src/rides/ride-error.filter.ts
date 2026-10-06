@@ -18,6 +18,8 @@ const STATUS_BY_CODE: Record<RideErrorCode, number> = {
   POOL_NOT_OPEN: 409,
   NOT_COMPATIBLE: 409,
   SEATS_UNAVAILABLE: 409,
+  TOO_EARLY: 409,
+  FEE_CHANGED: 409,
   BUSY: 503,
 };
 

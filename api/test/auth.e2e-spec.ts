@@ -1,7 +1,12 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { PrismaService } from '../src/database/prisma.service.js';
-import { createTestApp, resetDatabase, zoneId } from './helpers/test-app.js';
+import {
+  createTestApp,
+  resetDatabase,
+  seedStoryCast,
+  zoneId,
+} from './helpers/test-app.js';
 
 // Sign-up and login for both kinds of user (D-015).
 const nusrat = {
@@ -342,6 +347,51 @@ describe('Auth (e2e)', () => {
         .get('/auth/me')
         .set('Cookie', 'tesla_session=not-a-real-token');
       expect(fake.status).toBe(401);
+    });
+  });
+
+  describe('form posts from other sites (login CSRF)', () => {
+    beforeEach(async () => {
+      await seedStoryCast(app);
+    });
+
+    it('refuses a login sent as an HTML form would send it, and sets no cookie', async () => {
+      const form = await server()
+        .post('/auth/login')
+        .type('form')
+        .send(
+          'role=PASSENGER&email=nusrat%40teslapool.test&password=tesla1234',
+        );
+      expect(form.status).toBe(415);
+      expect(form.body).toMatchObject({ code: 'UNSUPPORTED_MEDIA_TYPE' });
+      expect(form.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('refuses a text/plain body too (also sent without a preflight)', async () => {
+      const text = await server()
+        .post('/auth/login')
+        .set('Content-Type', 'text/plain')
+        .send(
+          JSON.stringify({
+            role: 'PASSENGER',
+            email: 'nusrat@teslapool.test',
+            password: 'tesla1234',
+          }),
+        );
+      expect(text.status).toBe(415);
+    });
+
+    it('a JSON login still works, and so does a POST with no body', async () => {
+      const agent = request.agent(app.getHttpServer());
+      await agent
+        .post('/auth/login')
+        .send({
+          role: 'PASSENGER',
+          email: 'nusrat@teslapool.test',
+          password: 'tesla1234',
+        })
+        .expect(200);
+      await agent.post('/auth/logout').expect(204);
     });
   });
 });

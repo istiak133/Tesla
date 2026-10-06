@@ -9,6 +9,7 @@ import {
   resetDatabase,
   runMatcher,
   seedStoryCast,
+  waitedAtStop,
   zoneId,
 } from './helpers/test-app.js';
 
@@ -113,6 +114,7 @@ describe('Freed seats are filled automatically (e2e)', () => {
     const { jashim, shirin, rafiqRideId } = await bulletFull();
     const shirinRide = await shirin.post('/rides').send(trip(GL1, GL2));
     await jashim.post('/driver/pool/arrive').expect(200);
+    await waitedAtStop(app);
 
     await jashim.post(passenger(rafiqRideId, 'no-show')).expect(200);
     await runMatcher(app);

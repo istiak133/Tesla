@@ -2,6 +2,7 @@
 // and nothing private (other passengers' fares, password hashes) leaks by accident.
 import { cancellationFeePaisa } from '../fares/cancellation.js';
 import { RideStatus } from '../generated/prisma/client.js';
+import { DRIVER_GONE_MS, isSilent } from './driver-presence.js';
 import { RidesRepository } from './rides.repository.js';
 
 type Zone = { code: string; name: string };
@@ -20,6 +21,10 @@ export type RideView = {
   cancellationFeePaisa: number;
   cancelNowFeePaisa: number;
   duesPaisa: number;
+  // The driver's app has not reached us for minutes (no GPS, so this is the signal): a cancel
+  // is free, and after DRIVER_GONE_MS a passenger on board may end the ride.
+  driverSilent: boolean;
+  canEndRide: boolean;
   createdAt: Date;
   driver: { name: string; vehicleName: string } | null;
   // The Tesla's route and where the car is, once the ride has a seat.
@@ -55,6 +60,12 @@ export function toRideView(
     membership !== undefined &&
     (membership.leftAt === null || ride.status === RideStatus.COMPLETED);
   const pool = hasSeat ? membership.pool : null;
+  const inCar =
+    pool !== null &&
+    (ride.status === RideStatus.MATCHED ||
+      ride.status === RideStatus.DRIVER_ARRIVED ||
+      ride.status === RideStatus.STARTED);
+  const driverSilent = inCar && isSilent(pool.vehicle.lastSeenAt, now);
 
   return {
     id: ride.id,
@@ -68,6 +79,7 @@ export function toRideView(
     cancellationFeePaisa: ride.cancellationFeePaisa,
     cancelNowFeePaisa:
       pool !== null &&
+      !driverSilent &&
       (ride.status === RideStatus.MATCHED ||
         ride.status === RideStatus.DRIVER_ARRIVED)
         ? cancellationFeePaisa({
@@ -83,6 +95,11 @@ export function toRideView(
         : ride.status === RideStatus.CANCELLED
           ? 0
           : unpaidDuesPaisa,
+    driverSilent,
+    canEndRide:
+      ride.status === RideStatus.STARTED &&
+      pool !== null &&
+      isSilent(pool.vehicle.lastSeenAt, now, DRIVER_GONE_MS),
     createdAt: ride.createdAt,
     driver:
       pool === null

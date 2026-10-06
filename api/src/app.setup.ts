@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import type { EnvironmentVariables } from './config/env.validation.js';
+import { jsonBodiesOnly } from './json-bodies-only.js';
 import { RideErrorFilter } from './rides/ride-error.filter.js';
 
 /**
@@ -11,14 +12,16 @@ import { RideErrorFilter } from './rides/ride-error.filter.js';
  * Used by main.ts and by the e2e tests, so tests run the same setup as production.
  */
 export function configureApp(app: NestExpressApplication): void {
-  // Requests arrive through the Next.js proxy (and the hosting platform's proxy).
-  // Trusting the right number of hops gives the real client IP to rate limiting;
-  // too few would put every user behind one shared limit.
+  // Requests arrive through the Next.js proxy (and the hosting platform's proxy). This sets
+  // Express `trust proxy`, which decides `req.ip`. Rate limiting does not use it: it counts
+  // by the first X-Forwarded-For entry and by account (auth/client-ip.ts, D-013).
   const config =
     app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
   app.set('trust proxy', config.get('TRUST_PROXY_HOPS', { infer: true }));
 
   app.use(helmet());
+  // JSON bodies only, checked before the body parsers run (no form posts from other sites).
+  app.use(jsonBodiesOnly);
   app.use(cookieParser());
   app.useGlobalPipes(
     new ValidationPipe({

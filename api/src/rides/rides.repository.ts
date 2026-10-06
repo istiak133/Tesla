@@ -2,7 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma, RideStatus } from '../generated/prisma/client.js';
 import type { OpenTrip, WaitingRequest } from '../pooling/assignment.js';
-import type { Stop } from '../pooling/route-plan.js';
+import {
+  MAX_EXTRA_KM,
+  MAX_STRETCH_PERCENT,
+  type Stop,
+} from '../pooling/route-plan.js';
+import { DRIVER_SILENT_MS, SEEN_WRITE_INTERVAL_MS } from './driver-presence.js';
 import { RideError } from './ride.errors.js';
 
 // The client passed into a transaction callback.
@@ -20,6 +25,17 @@ export const ACTIVE_POOL_STATUSES: RideStatus[] = [
   RideStatus.DRIVER_ARRIVED,
   RideStatus.STARTED,
 ];
+
+/**
+ * Where a waiting request could be served: a route, the first stop still ahead of the car,
+ * and the free seats. A running trip gives its current stop and free seats; an idle car gives
+ * its own stop and all its seats.
+ */
+export type ServableBy = {
+  routeId: string;
+  fromStop: number;
+  freeSeats: number;
+};
 
 // A route with its stops in driving order, for includes.
 const ROUTE_STOPS = {
@@ -64,6 +80,27 @@ export class RidesRepository {
     }
   }
 
+  /**
+   * Marks the driver's app as seen now. Written at most every SEEN_WRITE_INTERVAL_MS, so a
+   * driver polling every few seconds costs one small write per half minute, not per request.
+   */
+  async touchDriver(driverId: string, now: Date): Promise<void> {
+    await this.prisma.vehicle.updateMany({
+      where: {
+        driverId,
+        OR: [
+          { lastSeenAt: null },
+          {
+            lastSeenAt: {
+              lt: new Date(now.getTime() - SEEN_WRITE_INTERVAL_MS),
+            },
+          },
+        ],
+      },
+      data: { lastSeenAt: now },
+    });
+  }
+
   // ---------- reads (no lock needed) ----------
 
   async findVehicleByDriver(driverId: string) {
@@ -80,6 +117,18 @@ export class RidesRepository {
   async findActiveRideOfPassenger(passengerId: string) {
     return this.prisma.rideRequest.findFirst({
       where: { passengerId, status: { in: ACTIVE_STATUSES } },
+    });
+  }
+
+  /** The passenger's latest ride that ended (completed or cancelled) since `since`, if any. */
+  async findLatestEndedRideOfPassenger(passengerId: string, since: Date) {
+    return this.prisma.rideRequest.findFirst({
+      where: {
+        passengerId,
+        status: { in: [RideStatus.COMPLETED, RideStatus.CANCELLED] },
+        updatedAt: { gte: since },
+      },
+      orderBy: { updatedAt: 'desc' },
     });
   }
 
@@ -119,6 +168,7 @@ export class RidesRepository {
     });
   }
 
+  /** The oldest waiting requests, for route suggestions (demand per route). */
   async listWaitingRequests() {
     return this.prisma.rideRequest.findMany({
       where: { status: RideStatus.REQUESTED },
@@ -129,15 +179,21 @@ export class RidesRepository {
   }
 
   /**
-   * Running trips with at least one free seat, on cars that are online: everything the
-   * matcher can seat riders in (D-023). Read without a lock; every seat is taken later under
-   * the car's lock with R1–R4 checked again.
+   * Running trips with at least one free seat, on cars that are online and whose driver's
+   * app was seen in the last DRIVER_SILENT_MS: everything the matcher can seat riders in
+   * (D-023). Read without a lock; every seat is taken later under the car's lock with R1–R4
+   * checked again.
    */
   async listOpenTrips(): Promise<OpenTrip[]> {
     const pools = await this.prisma.pool.findMany({
       where: {
         status: { in: ACTIVE_POOL_STATUSES },
-        vehicle: { isOnline: true },
+        // A driver whose app has gone silent gets no new riders: the requests go back to
+        // idle drivers instead of waiting for a car that may never come.
+        vehicle: {
+          isOnline: true,
+          lastSeenAt: { gte: new Date(Date.now() - DRIVER_SILENT_MS) },
+        },
       },
       orderBy: { createdAt: 'asc' },
       include: { route: { include: ROUTE_STOPS } },
@@ -147,6 +203,7 @@ export class RidesRepository {
       .map((pool) => ({
         vehicleId: pool.vehicleId,
         poolId: pool.id,
+        routeId: pool.routeId,
         createdAt: pool.createdAt,
         status: pool.status,
         currentStop: pool.currentStop,
@@ -161,20 +218,70 @@ export class RidesRepository {
       }));
   }
 
-  /** Requests still waiting for a seat, oldest first, at most `limit` of them (D-023). */
-  async listWaitingForMatch(limit: number): Promise<WaitingRequest[]> {
+  /**
+   * Waiting requests that at least one target can carry, oldest first, at most `limit`
+   * (D-023). The route checks run in SQL before the limit: requests never expire, so if the
+   * limit came first, `limit` old requests that no car can serve would fill the window for
+   * ever and hide every newer request from the matcher and from drivers.
+   * A target carries a request when its route passes the pickup and then the drop-off without
+   * going too far round (R1), the pickup is at or ahead of `fromStop` (R2), and the seats fit
+   * (R3). Each seat is still checked again under the car's lock.
+   */
+  async listWaitingServable(
+    targets: ServableBy[],
+    limit: number,
+  ): Promise<WaitingRequest[]> {
+    if (targets.length === 0) {
+      return [];
+    }
+    const values = Prisma.join(
+      targets.map(
+        (target) =>
+          Prisma.sql`(${target.routeId}::uuid, ${target.fromStop}::int, ${target.freeSeats}::int)`,
+      ),
+    );
+    const rows = await this.prisma.$queryRaw<
+      {
+        id: string;
+        pickup_zone_id: string;
+        dropoff_zone_id: string;
+        distance_km: number;
+        seats: number;
+        created_at: Date;
+      }[]
+    >`
+      SELECT r.id, r.pickup_zone_id, r.dropoff_zone_id, r.distance_km, r.seats, r.created_at
+      FROM ride_requests r
+      JOIN route_stops p ON p.zone_id = r.pickup_zone_id
+      JOIN route_stops d
+        ON d.route_id = p.route_id AND d.zone_id = r.dropoff_zone_id AND d.position > p.position
+      JOIN (VALUES ${values}) AS t(route_id, from_stop, free_seats)
+        ON t.route_id = p.route_id AND p.position >= t.from_stop AND r.seats <= t.free_seats
+      WHERE r.status = 'REQUESTED'
+        AND (d.km_from_start - p.km_from_start <= r.distance_km + ${MAX_EXTRA_KM}
+          OR (d.km_from_start - p.km_from_start) * 100 <= r.distance_km * ${MAX_STRETCH_PERCENT})
+      GROUP BY r.id
+      ORDER BY r.created_at ASC, r.id ASC
+      LIMIT ${limit}`;
+    return rows.map((row) => ({
+      id: row.id,
+      pickupZoneId: row.pickup_zone_id,
+      dropoffZoneId: row.dropoff_zone_id,
+      distanceKm: row.distance_km,
+      seats: row.seats,
+      createdAt: row.created_at,
+    }));
+  }
+
+  /** The given waiting requests with what a driver's list shows, oldest first. */
+  async findWaitingRequestsByIds(rideIds: string[]) {
+    if (rideIds.length === 0) {
+      return [];
+    }
     return this.prisma.rideRequest.findMany({
-      where: { status: RideStatus.REQUESTED },
+      where: { id: { in: rideIds }, status: RideStatus.REQUESTED },
       orderBy: { createdAt: 'asc' },
-      take: limit,
-      select: {
-        id: true,
-        pickupZoneId: true,
-        dropoffZoneId: true,
-        distanceKm: true,
-        seats: true,
-        createdAt: true,
-      },
+      include: { passenger: true, pickupZone: true, dropoffZone: true },
     });
   }
 

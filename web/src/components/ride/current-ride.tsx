@@ -1,24 +1,49 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { useState } from "react";
+import { api, ApiError } from "@/lib/api";
 import { dhakaTime, taka } from "@/lib/format";
 import type { Ride } from "@/lib/types";
+import { useNow } from "@/lib/use-now";
 import { RouteLine } from "../route-line";
 import { Button, Card, ErrorNote, StatusBadge } from "../ui";
 import { ProgressSteps } from "./progress-steps";
 
 const CANCELLABLE = ["REQUESTED", "MATCHED", "DRIVER_ARRIVED"];
 
+// After this long waiting, the screen suggests what the rider can do.
+const LONG_WAIT_MINUTES = 10;
+
 export function CurrentRide({ ride }: { ride: Ride }) {
   const queryClient = useQueryClient();
+  const now = useNow(30_000);
+  // Cancelling takes two taps: the second one confirms the fee shown with it.
+  const [confirming, setConfirming] = useState(false);
   const cancel = useMutation({
-    mutationFn: () => api<Ride>(`/rides/${ride.id}/cancel`, { method: "POST" }),
+    // The fee the rider agreed to: if the car reached their stop since, the API refuses
+    // (FEE_CHANGED) instead of charging more than the screen said.
+    mutationFn: (expectedFeePaisa: number) =>
+      api<Ride>(`/rides/${ride.id}/cancel`, {
+        method: "POST",
+        body: { expectedFeePaisa },
+      }),
     onSuccess: () => {
+      setConfirming(false);
       queryClient.invalidateQueries({ queryKey: ["current-ride"] });
       queryClient.invalidateQueries({ queryKey: ["ride-history"] });
     },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "FEE_CHANGED") {
+        // Show the new fee and let them decide again.
+        queryClient.invalidateQueries({ queryKey: ["current-ride"] });
+      }
+    },
   });
+  const waitedMinutes = Math.max(
+    0,
+    Math.floor((now - Date.parse(ride.createdAt)) / 60_000),
+  );
 
   const fareIsFinal = ride.finalFarePaisa !== null;
 
@@ -54,6 +79,20 @@ export function CurrentRide({ ride }: { ride: Ride }) {
         </div>
 
         <ProgressSteps status={ride.status} />
+
+        {ride.status === "REQUESTED" && (
+          <div className="rounded-xl border border-stone-200 p-4 text-sm">
+            <p>
+              Waiting since {dhakaTime(ride.createdAt)} ·{" "}
+              {waitedMinutes < 1 ? "just now" : `${waitedMinutes} min`}
+            </p>
+            <p className="mt-1 text-xs text-stone-500">
+              {waitedMinutes >= LONG_WAIT_MINUTES
+                ? "No Tesla with a free seat has come your way yet. You can keep waiting, or cancel at no cost."
+                : "You are seated as soon as a Tesla on your way has room, or a driver takes your request."}
+            </p>
+          </div>
+        )}
 
         {ride.route && ride.status !== "COMPLETED" && (
           <div className="space-y-3 rounded-xl border border-stone-200 p-4">
@@ -106,26 +145,72 @@ export function CurrentRide({ ride }: { ride: Ride }) {
           </ul>
         </details>
 
+        {ride.driverSilent && (
+          <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            {ride.canEndRide
+              ? "Your driver has not responded for a long time. You can end this ride; nothing is charged."
+              : ride.status === "STARTED"
+                ? "Your driver's app has not responded for a few minutes."
+                : "Your driver's app has not responded for a few minutes. You can cancel at no cost."}
+          </p>
+        )}
+
         {cancel.isError && <ErrorNote message={cancel.error.message} />}
-        {CANCELLABLE.includes(ride.status) && (
-          <div className="flex flex-wrap items-center justify-end gap-3">
-            {ride.cancelNowFeePaisa > 0 && (
-              <p className="text-xs text-stone-500">
-                The car is coming to your stop: cancelling now costs{" "}
-                {taka(ride.cancelNowFeePaisa)}, paid with your next ride.
-              </p>
-            )}
+        {ride.canEndRide && (
+          <div className="flex justify-end">
             <Button
               variant="danger"
               loading={cancel.isPending}
-              onClick={() => cancel.mutate()}
+              onClick={() => cancel.mutate(0)}
             >
-              {ride.cancelNowFeePaisa > 0
-                ? `Cancel ride · ${taka(ride.cancelNowFeePaisa)} fee`
-                : "Cancel ride"}
+              End ride
             </Button>
           </div>
         )}
+        {CANCELLABLE.includes(ride.status) &&
+          (confirming ? (
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <p className="text-sm">
+                {ride.cancelNowFeePaisa > 0
+                  ? `Cancel this ride? It costs ${taka(ride.cancelNowFeePaisa)}, paid with your next ride.`
+                  : "Cancel this ride? It is free."}
+              </p>
+              <Button
+                variant="secondary"
+                disabled={cancel.isPending}
+                onClick={() => setConfirming(false)}
+              >
+                Keep my ride
+              </Button>
+              <Button
+                variant="danger"
+                loading={cancel.isPending}
+                onClick={() => cancel.mutate(ride.cancelNowFeePaisa)}
+              >
+                Yes, cancel
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              {ride.cancelNowFeePaisa > 0 && (
+                <p className="text-xs text-stone-500">
+                  The car is coming to your stop: cancelling now costs{" "}
+                  {taka(ride.cancelNowFeePaisa)}, paid with your next ride.
+                </p>
+              )}
+              <Button
+                variant="danger"
+                onClick={() => {
+                  cancel.reset();
+                  setConfirming(true);
+                }}
+              >
+                {ride.cancelNowFeePaisa > 0
+                  ? `Cancel ride · ${taka(ride.cancelNowFeePaisa)} fee`
+                  : "Cancel ride"}
+              </Button>
+            </div>
+          ))}
       </div>
     </Card>
   );

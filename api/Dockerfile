@@ -33,4 +33,7 @@ USER node
 EXPOSE 3001
 
 # Apply pending migrations, upsert the demo cast (safe to repeat), then start the API.
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/seed/seed.js && node dist/main.js"]
+# A failed seed is logged but does not keep the API down (the data it writes is already there
+# after the first deploy). `exec` replaces the shell with Node, so SIGTERM on a
+# redeploy reaches Node and the graceful shutdown runs.
+CMD ["sh", "-c", "npx prisma migrate deploy && { node dist/seed/seed.js || echo 'seed failed: starting the API anyway'; } && exec node dist/main.js"]

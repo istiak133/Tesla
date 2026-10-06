@@ -6,6 +6,7 @@ import {
 } from '../geography/geography.repository.js';
 import { Prisma, RideStatus } from '../generated/prisma/client.js';
 import { servesTrip } from '../pooling/route-plan.js';
+import { DRIVER_GONE_MS, isSilent } from './driver-presence.js';
 import { PoolingService } from './pooling.service.js';
 import { RideError } from './ride.errors.js';
 import { RideView, toRideView } from './ride.views.js';
@@ -112,6 +113,19 @@ export class RidesService {
     return this.getRide(passengerId, active.id);
   }
 
+  /**
+   * The ride that ended a moment ago, while there is no active one: at a drop-off the
+   * passenger needs the final fare to pay in cash, and after a no-show or a driver who went
+   * silent, what happened. Shown for ENDED_RIDE_SHOWN_MS.
+   */
+  async getRecentlyEndedRide(passengerId: string): Promise<RideView | null> {
+    const ended = await this.ridesRepository.findLatestEndedRideOfPassenger(
+      passengerId,
+      new Date(Date.now() - ENDED_RIDE_SHOWN_MS),
+    );
+    return ended === null ? null : this.getRide(passengerId, ended.id);
+  }
+
   async listHistory(passengerId: string) {
     const rides = await this.ridesRepository.listRidesOfPassenger(passengerId);
     return rides.map((ride) => ({
@@ -135,8 +149,13 @@ export class RidesService {
    * cancels the trip, a no-show, another car takes it), so each attempt looks again and
    * decides only on what it saw under the right lock. A ride that is already cancelled
    * returns as it is, so a double tap or a retry gets the same answer, not an error.
+   * `expectedFeePaisa`: the fee the passenger saw; a higher fee now refuses the cancel.
    */
-  async cancelRide(passengerId: string, rideId: string): Promise<RideView> {
+  async cancelRide(
+    passengerId: string,
+    rideId: string,
+    expectedFeePaisa?: number,
+  ): Promise<RideView> {
     for (let attempt = 1; attempt <= CANCEL_ATTEMPTS; attempt++) {
       const ride = await this.ridesRepository.findRide(rideId);
       if (ride === null) {
@@ -148,7 +167,8 @@ export class RidesService {
           'This ride belongs to someone else',
         );
       }
-      refuseCancel(ride.status);
+      // On board: decided under the car's lock, where the driver's presence is read.
+      refuseCancel(ride.status, ride.status === RideStatus.STARTED);
       if (ride.status === RideStatus.CANCELLED) {
         return this.getRide(passengerId, rideId);
       }
@@ -162,7 +182,8 @@ export class RidesService {
         continue;
       }
 
-      // MATCHED or DRIVER_ARRIVED: the seat is in a car, so change it under that car's lock.
+      // MATCHED, DRIVER_ARRIVED or STARTED: the seat is in a car, so change it under that
+      // car's lock.
       const membership =
         await this.ridesRepository.findActiveMembership(rideId);
       if (membership === null) {
@@ -175,7 +196,15 @@ export class RidesService {
           const current = await tx.rideRequest.findUniqueOrThrow({
             where: { id: rideId },
           });
-          refuseCancel(current.status);
+          const vehicle = await tx.vehicle.findUniqueOrThrow({
+            where: { id: vehicleId },
+          });
+          const driverGone = isSilent(
+            vehicle.lastSeenAt,
+            new Date(),
+            DRIVER_GONE_MS,
+          );
+          refuseCancel(current.status, driverGone);
           if (current.status === RideStatus.CANCELLED) {
             return true; // a no-show or the other tap got here first
           }
@@ -200,7 +229,10 @@ export class RidesService {
             seat.poolId,
             current,
             passengerId,
-            'Passenger cancelled',
+            current.status === RideStatus.STARTED
+              ? 'Passenger ended the ride: the driver stopped responding'
+              : 'Passenger cancelled',
+            expectedFeePaisa,
           );
           return true;
         },
@@ -213,12 +245,19 @@ export class RidesService {
   }
 }
 
+// How long a finished ride stays on the passenger's screen (with the fare to pay).
+const ENDED_RIDE_SHOWN_MS = 30 * 60_000;
+
 // A ride changes hands at most a few times in a second; after this many looks, ask to retry.
 const CANCEL_ATTEMPTS = 3;
 
-/** Throws if the passenger may not cancel a ride in this status any more. */
-function refuseCancel(status: RideStatus): void {
-  if (status === RideStatus.STARTED) {
+/**
+ * Throws if the passenger may not cancel a ride in this status any more. On board, only when
+ * the driver's app has been silent for DRIVER_GONE_MS: then the passenger may end the ride,
+ * so a driver who vanished cannot hold them (and their one active ride) for ever.
+ */
+function refuseCancel(status: RideStatus, driverGone = false): void {
+  if (status === RideStatus.STARTED && !driverGone) {
     throw new RideError(
       'INVALID_TRANSITION',
       'A ride cannot be cancelled after pickup',

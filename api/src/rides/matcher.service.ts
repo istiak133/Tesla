@@ -1,4 +1,5 @@
 import {
+  BeforeApplicationShutdown,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -52,10 +53,14 @@ export type MatchRound = {
  * repeats work. Electing one instance per round is the step for that scale.
  */
 @Injectable()
-export class MatcherService implements OnModuleInit, OnModuleDestroy {
+export class MatcherService
+  implements OnModuleInit, OnModuleDestroy, BeforeApplicationShutdown
+{
   private readonly logger = new Logger(MatcherService.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  // The round in progress, so shutdown can wait for it to finish its writes.
+  private current: Promise<MatchRound> | null = null;
 
   constructor(
     private readonly ridesRepository: RidesRepository,
@@ -82,12 +87,28 @@ export class MatcherService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // No new round starts after onModuleDestroy; let the one in progress finish before the
+  // database pool closes (PrismaService disconnects in the last shutdown step).
+  async beforeApplicationShutdown(): Promise<void> {
+    await this.current;
+  }
+
   /** One round: plan from a snapshot, then apply it trip by trip. Never throws. */
   async runOnce(): Promise<MatchRound> {
     if (this.running) {
       return { skipped: true, seated: 0, missed: 0, optimal: true };
     }
     this.running = true;
+    this.current = this.round();
+    try {
+      return await this.current;
+    } finally {
+      this.running = false;
+      this.current = null;
+    }
+  }
+
+  private async round(): Promise<MatchRound> {
     try {
       const plan = await this.plan();
       const applied = await this.apply(plan);
@@ -108,17 +129,22 @@ export class MatcherService implements OnModuleInit, OnModuleDestroy {
         'match round failed; waiting riders stay for the next round',
       );
       return { skipped: false, seated: 0, missed: 0, optimal: true };
-    } finally {
-      this.running = false;
     }
   }
 
   /** Steps 1–3 on a snapshot of the waiting requests and the open trips. */
   async plan(): Promise<MatchPlan> {
-    const [trips, requests] = await Promise.all([
-      this.ridesRepository.listOpenTrips(),
-      this.ridesRepository.listWaitingForMatch(MAX_REQUESTS_PER_ROUND),
-    ]);
+    const trips = await this.ridesRepository.listOpenTrips();
+    // Only requests some running trip can carry, so old ones nobody can serve never fill the
+    // round's window.
+    const requests = await this.ridesRepository.listWaitingServable(
+      trips.map((trip) => ({
+        routeId: trip.routeId,
+        fromStop: trip.currentStop,
+        freeSeats: trip.seatCapacity - trip.seatsTaken,
+      })),
+      MAX_REQUESTS_PER_ROUND,
+    );
     return planAssignment(trips, requests, new Date());
   }
 
@@ -188,16 +214,23 @@ export class MatcherService implements OnModuleInit, OnModuleDestroy {
         seated += outcome.seated;
         missed += outcome.missed;
       } catch (error) {
-        if (
+        // Whatever failed for this trip, its riders wait for the next round and the other
+        // trips are still applied: one car's trouble must not cost the whole round.
+        missed += planned.requestIds.length;
+        const expected =
           (error instanceof RideError && error.code === 'BUSY') ||
-          isTransactionTimeout(error)
-        ) {
-          // The car is busy with a driver's action, or no connection was free in time:
-          // its riders wait for the next round, and the other trips are still applied.
-          missed += planned.requestIds.length;
-          continue;
+          isTransactionTimeout(error);
+        if (!expected) {
+          // The car is busy, or no connection was free in time, is normal; anything else
+          // (a dropped connection, a deadlock across instances) is worth a look.
+          this.logger.error(
+            {
+              vehicleId: planned.vehicleId,
+              error: error instanceof Error ? error.message : error,
+            },
+            'could not apply the plan for one trip; its riders wait for the next round',
+          );
         }
-        throw error;
       }
     }
     return { seated, missed };

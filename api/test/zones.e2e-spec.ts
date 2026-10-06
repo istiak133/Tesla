@@ -1,5 +1,7 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
+import { PrismaService } from '../src/database/prisma.service.js';
+import { seedGeography } from '../src/seed/seed-data.js';
 import { createTestApp, resetDatabase } from './helpers/test-app.js';
 
 describe('GET /zones and GET /routes (e2e)', () => {
@@ -56,5 +58,35 @@ describe('GET /zones and GET /routes (e2e)', () => {
     expect(
       fromUttara.body.map((zone: { code: string }) => zone.code),
     ).not.toContain('BSH');
+  });
+
+  it('seeding again never rewrites the stops of a route that already exists', async () => {
+    const prisma = app.get(PrismaService);
+    // Running it again on a seeded database changes nothing.
+    expect(await seedGeography(prisma)).toEqual({ routesLeftAsTheyAre: [] });
+
+    // The code and the database disagree on a stop (as after an edit to the route list):
+    // trips store stop positions, so the seed leaves the route alone and reports it.
+    const route = await prisma.route.findUniqueOrThrow({
+      where: { code: 'UTT-BSH' },
+    });
+    await prisma.routeStop.update({
+      where: { routeId_position: { routeId: route.id, position: 2 } },
+      data: { kmFromStart: { increment: 1 } },
+    });
+    const before = await prisma.routeStop.findMany({
+      where: { routeId: route.id },
+      orderBy: { position: 'asc' },
+    });
+    expect(await seedGeography(prisma)).toEqual({
+      routesLeftAsTheyAre: ['UTT-BSH'],
+    });
+    expect(
+      await prisma.routeStop.findMany({
+        where: { routeId: route.id },
+        orderBy: { position: 'asc' },
+      }),
+    ).toEqual(before);
+    await resetDatabase(app);
   });
 });

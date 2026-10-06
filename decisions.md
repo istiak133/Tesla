@@ -66,13 +66,14 @@ Details and reasoning for each entry are further down in this file.
 | Money storage | Integer paisa | Integer paisa (unchanged) | Implemented |
 | Concurrency | Vehicle row lock + CHECK + CAS + partial unique indexes (v2) | Unchanged, MVP subset: vehicle lock, CHECK seats, status-conditional seat update, one active pool per vehicle, one active request per passenger, CAS on request status. Rule added: inside the lock only the transaction's connection is used (found by the race test) | Implemented (tested: 20 riders racing for the last seat, 10/10 runs) |
 | Idempotency key (double tap) | E6 + G11 | Kept as a design, not built for the MVP | Deferred |
-| Seat hold (Y) | Driver confirms every join within 60 s | Rejected for en-route pooling: a fitting request takes its seat at once (D-009) | Rejected |
+| Seat hold (Y) | Driver confirms every join within 60 s | Rejected for en-route pooling: a fitting request is seated by the next match round, without a tap (D-009, D-023) | Rejected |
 | Request expiry | E1 | Kept as a design, not built for the MVP | Deferred |
 | Route choice | System picks at the first accept (fewest hops) → driver picks (D-008) | System suggests from the car's zone and waiting demand, driver confirms with one tap (D-009) | Implemented (`route-suggestion.ts`, `GET /driver/routes`, `POST /driver/location`) |
-| No-show | E7 | Driver marks a waiting passenger as no-show at their stop; seat freed (D-008) | Implemented |
+| No-show | E7 | Driver marks a waiting passenger as no-show at their stop; seat freed (D-008); only after 3 minutes at the stop (D-024) | Implemented |
 | Cancellation | Passenger until pickup; driver before start → riders back to REQUESTED | Passenger until picked up; empty pool closes itself; driver before the first pickup → riders back to REQUESTED (D-008) | Implemented |
-| Payment | Cash only | Cash only (unchanged) | Planned |
-| Hosting | Vercel + Render/Koyeb + Neon | Unchanged (re-check free tiers at deploy time) | Planned |
+| Payment | Cash only | Cash only (unchanged); the driver is told what to collect at each drop-off (D-024) | Implemented |
+| Hosting | Vercel + Render/Koyeb + Neon | Vercel + Render + Neon, free tiers | Implemented (live) |
+| Driver presence | Not designed | From driver requests and the open live stream (no GPS): silent 2 min → no new riders, free cancel; 15 min → a rider on board may end the ride (D-024) | Implemented |
 
 ---
 
@@ -692,6 +693,8 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 
 ## D-014: Matching a request to a car by where the car is (2026-09-29)
 
+> **Superseded in part by D-023 (v1.4.0):** the rule stands; seating now happens in `MatcherService` rounds. `tryAutoJoin`, `rankJoinCandidates`, `fillFreedSeats`, `fillTrip` and the `SKIP LOCKED` refill named below were removed.
+
 **Context (his request: optimisation matters for this system).** A code check found that the driver's location was only used by the route suggestion, not by matching:
 - **New trips ignored the car.** An idle driver could accept any request on the route, and the trip started at the passenger's stop. Example: Jashim finished at Bashundhara, accepted a request at Uttara, and the system assumed the car was at Uttara. In reality it had to drive 24 km empty, backwards, unpaid.
 - **Auto-join took the oldest trip, not the nearest car.** With two cars on one route, one a stop before the pickup and one four stops before, the older trip won and the rider waited longer.
@@ -874,6 +877,8 @@ Terminal: COMPLETED, CANCELLED, EXPIRED, NO_SHOW. Every other transition is reje
 - All suites pass: 72 unit, 62 e2e.
 
 ## D-017: A freed seat goes straight to a waiting rider (2026-09-30)
+
+> **Superseded in part by D-023 (v1.4.0):** the rule stands; seating now happens in `MatcherService` rounds. `tryAutoJoin`, `rankJoinCandidates`, `fillFreedSeats`, `fillTrip` and the `SKIP LOCKED` refill named below were removed.
 
 **Context (his request).** Until now a seat freed by a cancel, a no-show or a drop-off stayed empty until a driver accepted someone from the list. Auto-join only ran when a request was created. He wants the system to seat a waiting rider by itself.
 
@@ -1068,6 +1073,8 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
 
 ## D-021: After a driver cancels a trip, the riders are offered again at once (2026-09-30)
 
+> **Superseded in part by D-023 (v1.4.0):** the rule stands; seating now happens in `MatcherService` rounds. `tryAutoJoin`, `rankJoinCandidates`, `fillFreedSeats`, `fillTrip` and the `SKIP LOCKED` refill named below were removed.
+
 **Context.** He asked for a last full check that the later features (D-014 to D-020) did not break the earlier ones, with the passenger and driver cancels checked first.
 
 **Found:**
@@ -1126,6 +1133,8 @@ Two earlier tests now expect the new behaviour, a rider seated at a drop-off wit
 - `cancel-fee.e2e-spec.ts` (+1): the fee stays owed through a cancelled next ride.
 
 ## D-022: Only the first passenger goes through the driver; the system seats the rest (2026-09-30)
+
+> **Superseded in part by D-023 (v1.4.0):** the rule stands; seating now happens in `MatcherService` rounds. `tryAutoJoin`, `rankJoinCandidates`, `fillFreedSeats`, `fillTrip` and the `SKIP LOCKED` refill named below were removed.
 
 **Context.** He found it on the live site: two passengers asked for the same route at the same moment, the driver accepted one, and the other came back to the driver as a request instead of being seated. His rule: only a trip's **first** passenger goes through the driver; after that, every rider who fits is seated by the system. He also asked to check requests from a stop ahead, several drivers on one route, and two drivers accepting at once.
 
@@ -1188,7 +1197,7 @@ D-021 and D-022 were both bugs of the same kind: one moment had been missed. Wit
 
 **Decision (built).**
 - **`MatcherService`** runs a round every `MATCH_INTERVAL_MS` (default 2 s; 250 ms to 60 s allowed, checked at start-up). A round:
-  1. reads every running trip with a free seat on an online car, and the 50 oldest waiting requests;
+  1. reads every running trip with a free seat on an online car, and the 50 oldest waiting requests (since D-024: the 50 oldest that one of those trips can carry, filtered in SQL first);
   2. plans (`pooling/assignment.ts`, pure, no database);
   3. applies the plan.
 - **Plan, step 1 (RV):** which running trip could take which request on its own: the same R1–R4 rule (`joinProblem`) used everywhere else.
@@ -1213,7 +1222,7 @@ D-021 and D-022 were both bugs of the same kind: one moment had been missed. Wit
   - Otherwise, in the window before the next round, an idle driver could start a fresh trip for a rider a running car had room for.
   - Worse, a running car's driver could tap a rider the plan wanted elsewhere, which is exactly the greedy mistake again.
   - Drivers see only what an idle car alone can serve: a trip's first passenger. A driver with a running trip therefore always sees an empty list, and the screen now says riders join automatically.
-  - Accepting through the API is still checked under the lock as before.
+  - Accepting through the API is still checked under the lock as before. (D-024 closed the gap left here: accept now also refuses a driver who has a trip, and a request a running trip can carry.)
 - **Live updates:** a round that seats anyone publishes the same SSE hint as an HTTP action (D-020), so open screens refetch.
 
 **What changed for users and the API:**
@@ -1250,3 +1259,97 @@ D-021 and D-022 were both bugs of the same kind: one moment had been missed. Wit
 - **Every other test now runs a match round wherever it used to rely on instant seating;** what each test proves is unchanged.
 - Totals: 86 unit and 95 end-to-end tests pass.
 - **Flakes, explained this time:** test runs late at night stalled for minutes on random tests, and even an outside `psql` hung. `pmset -g log` showed the Mac going in and out of "Maintenance Sleep" (awake about 8 s, asleep 2–86 s). Runs are now done under `caffeinate`, and pass every time.
+
+## D-024: A review of the whole system, and every high and medium finding fixed (2026-10-06, v1.5.0, after submission)
+
+**Context (his request).** After v1.4.0 he asked for the whole project to be gone through, part by part, for loopholes and places to fix. He then asked for every major and medium finding to be fixed one at a time, each tested before the next, with two full end-to-end runs at the end. Seven reviews read the code in parallel:
+- auth and security
+- matching and pooling
+- the driver's trip
+- data model, geography and fares
+- realtime, operations and CI
+- the web app
+- tests and docs
+
+Every finding below was checked against the code before it was fixed. Branch `fix/audit-findings`.
+
+**Decisions (built), one per finding:**
+1. **Old requests could hide every new one (high).**
+   - The matcher and each driver's list read the 50 oldest waiting requests, and only then checked whether any car could serve them. Requests never expire, so 50 unservable ones blocked dispatch for everyone.
+   - The route checks (R1–R3: on the route in order, not too far round, pickup at or ahead, seats) now run in SQL before the limit (`RidesRepository.listWaitingServable`).
+2. **The accept API bypassed the matcher (high).**
+   - A request a running trip can carry belongs to the matcher (D-023), but only the list enforced it.
+   - Accept now refuses a driver who already has a trip (`409 HAS_ACTIVE_POOL`, "Riders join your trip automatically").
+   - Accept also refuses a request that fits an open trip (`409 ALREADY_TAKEN`). This check is read before the lock, so the transaction never waits for a second connection.
+3. **A driver who went silent held the trip for ever (high).**
+   - New column `vehicles.last_seen_at`. It is written by every driver request (an interceptor, before the handler) and by the driver's open live stream (on connect and at each 25 s heartbeat, also in a background tab), at most every 30 s.
+   - Silent for 2 minutes: the trip gets no new riders (its requests go back to idle drivers), and a cancel is free.
+   - Gone for 15 minutes: a rider on board may end the ride (no fare, no fee). The empty trip closes, and they can request again.
+   - Options considered: GPS (out of scope), a manual admin release (needs an operator), a driver heartbeat endpoint (the stream already is one).
+4. **No-show with no wait (medium).**
+   - A driver could tap "arrive" stops away, then "no-show", and earn ৳20.
+   - New column `pools.arrived_at`. A no-show is allowed only 3 minutes after the arrival, or after the seat if that was later (`409 TOO_EARLY`); the driver sees a countdown.
+   - A real no-show now always comes after the grace period, so it costs the ৳20, as D-018 intends.
+5. **A rider seated at the car's own stop held the car (medium).**
+   - Riders the matcher seats after the car arrived (`joined_at > arrived_at`) no longer block "leave". They go back to waiting, free, and their seat row is removed.
+   - D-017's refill at the stop is unchanged.
+   - Rejected: never seating at the car's current stop. That would undo D-017's own case, a rider waiting where someone just got off.
+6. **The login limit could be bypassed with a faked `X-Forwarded-For` (medium).**
+   - A second throttler counts login attempts per account (10 per 10 minutes), whatever address they claim.
+   - Trade-off: someone can keep one account's login blocked by failing on purpose; a CAPTCHA is the next step.
+   - The limit is now tested: `RATE_LIMIT_IN_TESTS` turns it on for that one test file.
+7. **Login CSRF (medium).**
+   - A form on another site could log a visitor in to the attacker's account.
+   - The API now accepts only JSON bodies (`415` otherwise), checked before the body parsers run. A cross-site JSON request needs a preflight, and CORS is off.
+8. **The seed on every boot (medium).**
+   - The seed rewrote route stops by position, while trips store positions. A future edit to the route list would crash-loop the API, or silently move trips to other zones.
+   - An existing route's stops are now never rewritten; a difference is reported instead.
+   - A failed seed no longer stops the API, and `exec` makes SIGTERM reach Node.
+9. **Hand-written partial indexes (claimed medium, not real).**
+   - Checked with `prisma migrate diff` against the migrated database: Prisma 7 does not drop indexes it does not know.
+   - A test now checks anyway that the indexes exist and are partial.
+10. **Two hot queries without an index (medium).** Driver history and the passenger's ride view. The indexes are added in the schema (with `migrate diff`, not `migrate dev`).
+11. **Shutdown order (medium).**
+    - The database closed before the HTTP server, and open live streams kept the server open.
+    - Now: the streams end first, the matcher waits for its round, the HTTP server closes, and the database disconnects last.
+    - Tested, and checked that the test fails without the fix.
+12. **One bad trip stopped the round, and a hung query stopped the matcher for good (medium).** Any error now skips only that trip. Every query has a server timeout (10 s) and a client timeout (15 s).
+13. **The driver did not see the cash to collect (medium).** The drop-off answers with a receipt (final fare plus earlier fees). It is shown even after the last drop-off has closed the trip.
+14. **A cancelled trip's history showed riders another car carried (medium).**
+    - A seat taken back (a driver's trip cancel, or a late joiner at depart) is now removed, not closed, so no trip can count a ride it did not carry. The record stays in the ride's history events.
+    - Found while fixing it: decision 5 had the same shape, and would have counted such a rider in the trip's sharing discount and earnings. The same change fixes it.
+15. **Web (medium).**
+    - The previous user's cached data showed after a session expiry.
+    - The session check spun for ever on a 5xx.
+    - Raw error texts were shown.
+    - No fare after the drop-off: `/rides/current` now also returns `lastEnded`.
+    - No waiting time was shown.
+    - A one-tap cancel could charge a fee the screen did not show; now `expectedFeePaisa` is sent, and a higher fee is refused with `409 FEE_CHANGED`.
+    - The live stream could die silently; now it catches up on reconnect, reopens with backoff, and has a 60 s watchdog.
+16. **Tests (medium).**
+    - Web unit tests (new, in CI).
+    - 401 and 403 for every private route, and an expired session on the stream.
+    - The matcher's timer.
+    - A "reads never publish" test that could not fail now watches the source.
+    - Sleeps replaced by waiting for the stream's headers.
+
+**Findings checked and found wrong (recorded, not fixed):**
+- The partial indexes (decision 9).
+- "The step budget can return an empty plan": the search goes deep first, so a full plan is found within about one step per trip. A unit test now pins this.
+- "A trip can have 20,000 candidate groups": an active trip has at least one rider, so at most 2 free seats and at most 1,275 groups.
+- "The seed re-hashes passwords on every boot": the hash is used only when creating an account.
+
+**Low findings, not in this phase:**
+- Login timing reveals which emails exist.
+- Sign-up names the field that is already registered.
+- The client's `x-request-id` is trusted.
+- bcrypt reads only 72 bytes.
+- A new login does not end the old session.
+- No web security headers.
+- Every change is broadcast to every open screen, and stream connections are not limited.
+- `/health` doubles as the liveness check.
+- CI hardening: permissions, SHA pins, a dependency audit, starting the image.
+- A few missing CHECKs on money and stops.
+- Small web and accessibility items.
+
+**Tests:** 106 unit tests (API and web) and 160 end-to-end tests pass, and the full end-to-end suite passed twice in a row. Each fix's own tests are listed in the private `audit_fixes.md`.

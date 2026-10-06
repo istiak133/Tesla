@@ -1,4 +1,4 @@
-import { clientIp } from './client-ip.js';
+import { accountKey, clientIp } from './client-ip.js';
 
 describe('clientIp (the rate-limit key)', () => {
   it('uses the first X-Forwarded-For entry: the original client', () => {
@@ -24,5 +24,27 @@ describe('clientIp (the rate-limit key)', () => {
 
   it('falls back to the connection address without the header', () => {
     expect(clientIp({ headers: {}, ip: '127.0.0.1' })).toBe('127.0.0.1');
+  });
+});
+
+describe('accountKey (the per-account login limit)', () => {
+  it('is the same account whatever address the attempt claims to come from', () => {
+    const tries = ['198.51.100.1', '198.51.100.2'].map((ip) =>
+      accountKey({
+        headers: { 'x-forwarded-for': ip },
+        ip: '10.0.0.5',
+        body: { email: '  Nusrat@TeslaPool.test ' },
+      }),
+    );
+    expect(tries).toEqual([
+      'account:nusrat@teslapool.test',
+      'account:nusrat@teslapool.test',
+    ]);
+  });
+
+  it('falls back to the address without an email', () => {
+    expect(accountKey({ headers: {}, ip: '10.0.0.5', body: {} })).toBe(
+      'ip:10.0.0.5',
+    );
   });
 });
