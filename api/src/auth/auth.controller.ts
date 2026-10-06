@@ -33,6 +33,13 @@ import { SESSION_COOKIE_NAME, sessionCookieOptions } from './session-cookie.js';
 
 // At most 5 sign-up or login attempts per minute from one client.
 const AUTH_RATE_LIMIT = { default: { limit: 5, ttl: 60_000 } };
+// Login also: at most 10 attempts on one account per 10 minutes, from anywhere. A faked
+// address per request gets around the first limit, not this one. (The cost: someone can
+// keep one account's login blocked by failing on purpose; a CAPTCHA would be the next step.)
+const LOGIN_RATE_LIMIT = {
+  ...AUTH_RATE_LIMIT,
+  account: { limit: 10, ttl: 10 * 60_000 },
+};
 
 @Controller('auth')
 export class AuthController {
@@ -69,7 +76,7 @@ export class AuthController {
   @Post('login')
   @HttpCode(200)
   @UseGuards(ThrottlerGuard)
-  @Throttle(AUTH_RATE_LIMIT)
+  @Throttle(LOGIN_RATE_LIMIT)
   async login(
     @Body() body: LoginDto,
     @Res({ passthrough: true }) response: Response,

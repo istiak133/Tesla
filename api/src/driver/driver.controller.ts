@@ -16,6 +16,7 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard.js';
 import { Role } from '../generated/prisma/client.js';
 import { PublishChangesInterceptor } from '../realtime/publish-changes.interceptor.js';
+import { DriverPresenceInterceptor } from './driver-presence.interceptor.js';
 import { ChooseRouteDto } from './dto/choose-route.dto.js';
 import { SetLocationDto } from './dto/set-location.dto.js';
 import { DriverService } from './driver.service.js';
@@ -25,8 +26,9 @@ import { TripService } from './trip.service.js';
 @Controller('driver')
 @UseGuards(SessionAuthGuard, RolesGuard)
 @Roles(Role.DRIVER)
-// Every successful action tells open screens to refresh (live updates, D-020).
-@UseInterceptors(PublishChangesInterceptor)
+// Every request marks the driver's app as seen; every successful action tells open screens
+// to refresh (live updates, D-020).
+@UseInterceptors(DriverPresenceInterceptor, PublishChangesInterceptor)
 export class DriverController {
   constructor(
     private readonly driverService: DriverService,

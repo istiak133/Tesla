@@ -1,15 +1,27 @@
 import { Injectable } from '@nestjs/common';
+import { NO_SHOW_WAIT_MS, noShowAllowedFrom } from '../fares/cancellation.js';
 import { finalFarePaisa } from '../fares/fare.js';
 import { Pool, RideStatus } from '../generated/prisma/client.js';
 import { sharedAHop, type Stop } from '../pooling/route-plan.js';
 import { PoolingService } from '../rides/pooling.service.js';
 import { RideError } from '../rides/ride.errors.js';
+import { firstName } from '../rides/ride.views.js';
 import {
   ACTIVE_POOL_STATUSES,
   RidesRepository,
   Tx,
 } from '../rides/rides.repository.js';
 import { DriverService } from './driver.service.js';
+
+/** What the driver collects in cash at a drop-off: the final fare plus earlier late-cancel fees. */
+export type DropOffReceipt = {
+  rideId: string;
+  passengerName: string;
+  finalFarePaisa: number;
+  duesCollectedPaisa: number;
+  totalPaisa: number;
+  shared: boolean;
+};
 
 /**
  * The trip, stop by stop (docs/assumptions.md §5). The driver arrives at a stop,
@@ -38,7 +50,7 @@ export class TripService {
 
       await tx.pool.update({
         where: { id: pool.id },
-        data: { status: RideStatus.DRIVER_ARRIVED },
+        data: { status: RideStatus.DRIVER_ARRIVED, arrivedAt: new Date() },
       });
       // The car is here now: this is also where route suggestions start from.
       await tx.vehicle.update({
@@ -67,7 +79,10 @@ export class TripService {
     return this.driverService.getCurrentPool(driverId);
   }
 
-  /** DRIVER_ARRIVED → STARTED: leave for the next stop, once this stop is done. */
+  /**
+   * DRIVER_ARRIVED → STARTED: leave for the next stop, once this stop is done. Riders the
+   * matcher seated here after the car arrived do not hold it; they go back to waiting.
+   */
   async depart(driverId: string) {
     await this.inTrip(driverId, async (tx, pool, stops) => {
       if (pool.status !== RideStatus.DRIVER_ARRIVED) {
@@ -77,9 +92,19 @@ export class TripService {
         where: { poolId: pool.id, leftAt: null },
         include: { rideRequest: true },
       });
+      // Seated here by the matcher while the car was already standing at the stop: they may
+      // still be far away within the zone, so they do not hold the car. They go back to
+      // waiting, with no fee; the next round finds them another seat.
+      const seatedAfterArrival = members.filter(
+        (member) =>
+          member.rideRequest.status === RideStatus.DRIVER_ARRIVED &&
+          pool.arrivedAt !== null &&
+          member.joinedAt > pool.arrivedAt,
+      );
       const unfinished = members.find(
         (member) =>
-          member.rideRequest.status === RideStatus.DRIVER_ARRIVED ||
+          (member.rideRequest.status === RideStatus.DRIVER_ARRIVED &&
+            !seatedAfterArrival.includes(member)) ||
           member.dropoffStop === pool.currentStop,
       );
       if (unfinished !== undefined) {
@@ -92,9 +117,30 @@ export class TripService {
         throw new RideError('INVALID_TRANSITION', 'This is the last stop');
       }
 
+      for (const member of seatedAfterArrival) {
+        // The seat is taken back as if never given: she never got in. Removing the row (not
+        // just closing it) keeps this trip's fares, sharing and earnings from ever counting
+        // her ride if she later rides in another car; the history event below keeps the record.
+        await tx.poolMember.delete({ where: { id: member.id } });
+        await this.moveRide(tx, pool, member.rideRequestId, {
+          from: RideStatus.DRIVER_ARRIVED,
+          to: RideStatus.REQUESTED,
+          actorUserId: driverId,
+          reason: `The car left ${stops[pool.currentStop].name} before you reached it; finding you another seat`,
+        });
+      }
+      const freed = seatedAfterArrival.reduce(
+        (sum, member) => sum + member.seats,
+        0,
+      );
+
       await tx.pool.update({
         where: { id: pool.id },
-        data: { status: RideStatus.STARTED, currentStop: pool.currentStop + 1 },
+        data: {
+          status: RideStatus.STARTED,
+          currentStop: pool.currentStop + 1,
+          seatsTaken: { decrement: freed },
+        },
       });
     });
     return this.driverService.getCurrentPool(driverId);
@@ -131,7 +177,9 @@ export class TripService {
    * −20% if someone else rode with them on at least one hop.
    */
   async dropOff(driverId: string, rideId: string) {
-    await this.inTrip(driverId, async (tx, pool, stops) => {
+    // What to collect, returned from inside the transaction: once the last rider is off, the
+    // trip is closed and the driver's state no longer shows it.
+    const receipt = await this.inTrip(driverId, async (tx, pool, stops) => {
       const member = await this.findMember(tx, pool, rideId);
       if (
         member.rideRequest.status !== RideStatus.STARTED ||
@@ -210,8 +258,22 @@ export class TripService {
 
       // Seats freed here go to riders waiting ahead at the next match round (D-017, D-023).
       await this.poolingService.closeIfEmpty(tx, pool.id);
+
+      const passenger = await tx.user.findUniqueOrThrow({
+        where: { id: member.rideRequest.passengerId },
+        select: { name: true },
+      });
+      const collected: DropOffReceipt = {
+        rideId,
+        passengerName: firstName(passenger.name),
+        finalFarePaisa: fare,
+        duesCollectedPaisa: dues,
+        totalPaisa: fare + dues,
+        shared,
+      };
+      return collected;
     });
-    return this.driverService.getCurrentPool(driverId);
+    return { ...(await this.driverService.getCurrentPool(driverId)), receipt };
   }
 
   /** The passenger did not come to the car: their seat is freed. */
@@ -222,6 +284,16 @@ export class TripService {
         throw new RideError(
           'INVALID_TRANSITION',
           'Only a passenger waiting at this stop can be a no-show',
+        );
+      }
+      // The car waits NO_SHOW_WAIT_MS first (from the arrival, or from the seat if later).
+      if (
+        pool.arrivedAt !== null &&
+        new Date() < noShowAllowedFrom(pool.arrivedAt, member.joinedAt)
+      ) {
+        throw new RideError(
+          'TOO_EARLY',
+          `Wait ${NO_SHOW_WAIT_MS / 60_000} minutes at the stop before marking a no-show`,
         );
       }
       await this.poolingService.leaveUnderLock(
@@ -238,8 +310,8 @@ export class TripService {
   /**
    * Before the first pickup only (e.g. a breakdown): passengers go back to waiting, with no
    * fee (the driver cancelled, not them). Once that has committed, each of them is offered
-   * again exactly like a new request (D-021): a running car that fits seats them at once,
-   * otherwise every idle car that can take them sees them (D-020).
+   * again exactly like a new request (D-021): the next match round seats them in a running
+   * car that fits (D-023), otherwise every idle car that can take them sees them (D-020).
    */
   async cancelTrip(driverId: string) {
     await this.inTrip(driverId, async (tx, pool) => {
@@ -258,10 +330,9 @@ export class TripService {
         orderBy: { rideRequest: { createdAt: 'asc' } },
       });
       for (const member of members) {
-        await tx.poolMember.update({
-          where: { id: member.id },
-          data: { leftAt: new Date() },
-        });
+        // Taken back, not just closed: if another car later carries this rider, this trip's
+        // history must not list them or their fare. The history event keeps the record.
+        await tx.poolMember.delete({ where: { id: member.id } });
         await this.moveRide(tx, pool, member.rideRequestId, {
           from: member.rideRequest.status,
           to: RideStatus.REQUESTED,
@@ -286,12 +357,12 @@ export class TripService {
   // ---------- helpers ----------
 
   /** Runs `work` on the driver's current trip, inside the vehicle lock. */
-  private async inTrip(
+  private async inTrip<T>(
     driverId: string,
-    work: (tx: Tx, pool: Pool, stops: Stop[]) => Promise<void>,
-  ): Promise<void> {
+    work: (tx: Tx, pool: Pool, stops: Stop[]) => Promise<T>,
+  ): Promise<T> {
     const vehicle = await this.driverService.getVehicle(driverId);
-    await this.ridesRepository.withVehicleLock(vehicle.id, async (tx) => {
+    return this.ridesRepository.withVehicleLock(vehicle.id, async (tx) => {
       const pool = await tx.pool.findFirst({
         where: { vehicleId: vehicle.id, status: { in: ACTIVE_POOL_STATUSES } },
       });
@@ -299,7 +370,7 @@ export class TripService {
         throw new RideError('NO_ACTIVE_POOL', 'You have no current trip');
       }
       const stops = await this.ridesRepository.findRouteStops(tx, pool.routeId);
-      await work(tx, pool, stops);
+      return work(tx, pool, stops);
     });
   }
 

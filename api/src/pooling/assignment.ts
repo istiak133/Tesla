@@ -25,6 +25,7 @@ import { joinProblem, tripStops, type Stop } from './route-plan.js';
 export type OpenTrip = {
   vehicleId: string;
   poolId: string;
+  routeId: string;
   createdAt: Date;
   status: RideStatus;
   currentStop: number;

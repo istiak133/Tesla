@@ -4,7 +4,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { LoggerModule } from 'nestjs-pino';
 import { AuthModule } from './auth/auth.module.js';
-import { clientIp } from './auth/client-ip.js';
+import { accountKey, clientIp } from './auth/client-ip.js';
 import {
   EnvironmentVariables,
   NodeEnv,
@@ -34,14 +34,26 @@ import { UsersModule } from './users/users.module.js';
         ),
     }),
     // Rate limiting. The actual limits are set per route with @Throttle.
-    // Skipped in tests, which log in many times in a row.
+    // Skipped in tests, which log in many times in a row, except in the test of the limit
+    // itself (RATE_LIMIT_IN_TESTS, read per request so that test can turn it on).
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<EnvironmentVariables, true>) => ({
-        throttlers: [{ limit: 100, ttl: 60_000 }],
-        // Count by the real client, not the proxy in front of us (see client-ip.ts).
+        throttlers: [
+          // Count by the real client, not the proxy in front of us (see client-ip.ts).
+          { name: 'default', limit: 100, ttl: 60_000 },
+          // Count by the account tried, so a faked address cannot get around the limit.
+          {
+            name: 'account',
+            limit: 100,
+            ttl: 60_000,
+            getTracker: (request) => accountKey(request as Request),
+          },
+        ],
         getTracker: (request) => clientIp(request as Request),
-        skipIf: () => config.get('NODE_ENV', { infer: true }) === NodeEnv.Test,
+        skipIf: () =>
+          config.get('NODE_ENV', { infer: true }) === NodeEnv.Test &&
+          process.env.RATE_LIMIT_IN_TESTS !== 'true',
       }),
     }),
     DatabaseModule,

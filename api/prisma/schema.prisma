@@ -149,15 +149,18 @@ model DriverProfile {
 }
 
 model Vehicle {
-  id            String   @id @default(uuid()) @db.Uuid
-  driverId      String   @unique @map("driver_id") @db.Uuid // one vehicle per driver
+  id            String    @id @default(uuid()) @db.Uuid
+  driverId      String    @unique @map("driver_id") @db.Uuid // one vehicle per driver
   name          String
-  seatCapacity  Int      @map("seat_capacity")
-  isOnline      Boolean  @default(false) @map("is_online")
-  routeId       String?  @map("route_id") @db.Uuid // the route the driver drives now; null until chosen
-  currentZoneId String?  @map("current_zone_id") @db.Uuid // where the vehicle is; updated at every stop
-  plateNumber   String?  @unique @map("plate_number") // e.g. DHAKA METRO-GA 12-3456; null only for vehicles made before D-015
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  seatCapacity  Int       @map("seat_capacity")
+  isOnline      Boolean   @default(false) @map("is_online")
+  routeId       String?   @map("route_id") @db.Uuid // the route the driver drives now; null until chosen
+  currentZoneId String?   @map("current_zone_id") @db.Uuid // where the vehicle is; updated at every stop
+  plateNumber   String?   @unique @map("plate_number") // e.g. DHAKA METRO-GA 12-3456; null only for vehicles made before D-015
+  // When the driver's app last reached the API (a request or an open live stream). A driver
+  // silent for minutes gets no new riders, and their riders can leave without a fee.
+  lastSeenAt    DateTime? @map("last_seen_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   driver      User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
   route       Route? @relation(fields: [routeId], references: [id])
@@ -180,6 +183,8 @@ model Pool {
   seatCapacity        Int        @map("seat_capacity")
   seatsTaken          Int        @default(0) @map("seats_taken")
   createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  // When the car last arrived at a stop: the no-show wait counts from here.
+  arrivedAt           DateTime?  @map("arrived_at") @db.Timestamptz(6)
   startedAt           DateTime?  @map("started_at") @db.Timestamptz(6)
   endedAt             DateTime?  @map("ended_at") @db.Timestamptz(6)
   // Who gets what, locked when the trip is COMPLETED (docs/assumptions.md §7.2).
@@ -194,6 +199,8 @@ model Pool {
   events           RideEvent[]
 
   @@index([status, routeId])
+  // A driver's past trips, newest first (the history screen).
+  @@index([vehicleId, createdAt(sort: Desc)])
   @@map("pools")
 }
 
@@ -249,6 +256,9 @@ model PoolMember {
   rideRequest RideRequest @relation(fields: [rideRequestId], references: [id], onDelete: Cascade)
 
   @@index([poolId])
+  // A ride's seats, latest first (the passenger's ride screen); the other index only covers
+  // seats still held.
+  @@index([rideRequestId, joinedAt(sort: Desc)])
   @@map("pool_members")
 }
 

@@ -57,7 +57,18 @@ const JASHIM_DOCUMENTS = {
 };
 const BULLET_PLATE = 'DHAKA METRO-GA 11-0001';
 
-export async function seedGeography(prisma: PrismaClient): Promise<void> {
+/**
+ * Upserts zones, distances and routes. A route's stops are written only when it has none:
+ * trips and their riders store stop *positions*, so rewriting the stops of a route that
+ * already exists would quietly move every running and past trip onto different zones (or
+ * fail on the one-zone-per-route unique index and stop the app from starting). A route whose
+ * stops in the code differ from the database is left as it is and returned, so the change can
+ * be made on purpose: as a new route code, with a data migration.
+ */
+export async function seedGeography(
+  prisma: PrismaClient,
+): Promise<{ routesLeftAsTheyAre: string[] }> {
+  const routesLeftAsTheyAre: string[] = [];
   const zoneIdByCode = new Map<string, string>();
   for (const zone of ZONES) {
     const saved = await prisma.zone.upsert({
@@ -97,16 +108,33 @@ export async function seedGeography(prisma: PrismaClient): Promise<void> {
       create: { code: route.code, name: `${first} → ${last}` },
     });
     const km = kmFromStart(route.stops);
-    for (let position = 0; position < route.stops.length; position++) {
-      const zoneId = zoneIdByCode.get(route.stops[position])!;
-      const stop = { zoneId, kmFromStart: km[position] };
-      await prisma.routeStop.upsert({
-        where: { routeId_position: { routeId: saved.id, position } },
-        update: stop,
-        create: { routeId: saved.id, position, ...stop },
-      });
+    const wanted = route.stops.map((code, position) => ({
+      routeId: saved.id,
+      position,
+      zoneId: zoneIdByCode.get(code)!,
+      kmFromStart: km[position],
+    }));
+    const existing = await prisma.routeStop.findMany({
+      where: { routeId: saved.id },
+      orderBy: { position: 'asc' },
+    });
+    if (existing.length === 0) {
+      await prisma.routeStop.createMany({ data: wanted });
+      continue;
+    }
+    const same =
+      existing.length === wanted.length &&
+      existing.every(
+        (stop, i) =>
+          stop.position === wanted[i].position &&
+          stop.zoneId === wanted[i].zoneId &&
+          stop.kmFromStart === wanted[i].kmFromStart,
+      );
+    if (!same) {
+      routesLeftAsTheyAre.push(route.code);
     }
   }
+  return { routesLeftAsTheyAre };
 }
 
 // The route Jashim drives in the story: Uttara → Banani → Mohakhali → Gulshan 1 → …

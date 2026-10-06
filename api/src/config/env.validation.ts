@@ -61,7 +61,8 @@ export class EnvironmentVariables {
   SESSION_TTL_HOURS: number = 12;
 
   // How many proxies sit in front of the API (Next.js proxy, hosting load balancer).
-  // Used to find the real client IP for rate limiting. Set per deployment.
+  // Sets Express `trust proxy` (what `req.ip` is). Rate limiting does not use it: it counts
+  // by the first X-Forwarded-For entry and by account (auth/client-ip.ts, D-013).
   @IsInt()
   @Min(0)
   @Max(5)

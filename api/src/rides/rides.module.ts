@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
+import { DriverPresenceInterceptor } from '../driver/driver-presence.interceptor.js';
 import { DriverController } from '../driver/driver.controller.js';
 import { DriverService } from '../driver/driver.service.js';
 import { TripService } from '../driver/trip.service.js';
@@ -20,6 +21,8 @@ import { RidesService } from './rides.service.js';
     RidesService,
     DriverService,
     TripService,
+    DriverPresenceInterceptor,
   ],
+  exports: [RidesRepository],
 })
 export class RidesModule {}
