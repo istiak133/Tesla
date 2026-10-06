@@ -6,6 +6,7 @@ import {
   resetDatabase,
   runMatcher,
   seedStoryCast,
+  waitedAtStop,
   zoneId,
 } from './helpers/test-app.js';
 
@@ -117,6 +118,36 @@ describe('Late-cancel fee (e2e)', () => {
     ).toBe(2000);
   });
 
+  it('a cancel is refused, not charged, if the fee rose after her screen showed it', async () => {
+    const { jashim, nusrat, rafiqRideId, nusratRideId } = await nusratAhead();
+    await seatedMinutesAgo(nusratRideId, 5);
+    // Her screen shows a free cancel: the car is still at Banani.
+    const seen = (await nusrat.get('/rides/current')).body.ride
+      .cancelNowFeePaisa;
+    expect(seen).toBe(0);
+
+    // Before she taps, the driver leaves for her stop: now it would cost Tk 20.
+    await leaveForMohakhali(jashim, rafiqRideId);
+    const refused = await nusrat
+      .post(cancel(nusratRideId))
+      .send({ expectedFeePaisa: seen });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({
+      code: 'FEE_CHANGED',
+      message: 'The car has just reached your stop: cancelling now costs Tk 20',
+    });
+    expect((await nusrat.get('/rides/current')).body.ride.status).toBe(
+      'MATCHED',
+    );
+
+    // Agreeing to the new fee cancels.
+    const cancelled = await nusrat
+      .post(cancel(nusratRideId))
+      .send({ expectedFeePaisa: 2000 })
+      .expect(200);
+    expect(cancelled.body.cancellationFeePaisa).toBe(2000);
+  });
+
   it('is free during the 2-minute grace period after getting the seat', async () => {
     const { jashim, nusrat, rafiqRideId, nusratRideId } = await nusratAhead();
     await leaveForMohakhali(jashim, rafiqRideId);
@@ -130,6 +161,7 @@ describe('Late-cancel fee (e2e)', () => {
     await leaveForMohakhali(jashim, rafiqRideId);
     await jashim.post('/driver/pool/arrive').expect(200); // at Mohakhali
     await seatedMinutesAgo(nusratRideId, 5);
+    await waitedAtStop(app);
     await jashim.post(passenger(nusratRideId, 'no-show')).expect(200);
 
     const ride = await prisma.rideRequest.findUniqueOrThrow({
@@ -198,7 +230,16 @@ describe('Late-cancel fee (e2e)', () => {
     await jashim.post(passenger(next.body.id, 'pickup')).expect(200);
     await jashim.post('/driver/pool/depart').expect(200);
     await jashim.post('/driver/pool/arrive').expect(200);
-    await jashim.post(passenger(next.body.id, 'dropoff')).expect(200);
+    const off = await jashim
+      .post(passenger(next.body.id, 'dropoff'))
+      .expect(200);
+    // The last drop-off closes the trip, and the driver is still told the full amount.
+    expect(off.body.pool).toBeNull();
+    expect(off.body.receipt).toMatchObject({
+      finalFarePaisa: 7500,
+      duesCollectedPaisa: 2000,
+      totalPaisa: 9500,
+    });
 
     // Paid: the fare plus the old fee, and the old fee is marked paid by this ride.
     const done = (await nusrat.get(`/rides/${next.body.id}`)).body;

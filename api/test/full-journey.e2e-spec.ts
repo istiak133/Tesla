@@ -7,6 +7,7 @@ import {
   resetDatabase,
   runMatcher,
   seedStoryCast,
+  waitedAtStop,
 } from './helpers/test-app.js';
 
 // One whole morning on Airport Road, only through the HTTP API, the way the web app uses it.
@@ -124,15 +125,13 @@ describe('A full trip, end to end (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: UTT, seats: 1 });
     expect(karimRide.body.status).toBe('REQUESTED');
-    // Not for this car: it is not in Jashim's list, and accepting it anyway is refused (D-020).
+    // Not for this car: it is not in Jashim's list, and a driver on a trip cannot accept
+    // anyone by hand (D-020, D-023).
     expect((await jashim.get('/driver/requests')).body).toEqual([]);
     const wrongWay = await jashim.post(
       `/driver/requests/${karimRide.body.id}/accept`,
     );
-    expect(wrongWay.body).toMatchObject({
-      code: 'NOT_COMPATIBLE',
-      message: 'Not on this route in this direction',
-    });
+    expect(wrongWay.body).toMatchObject({ code: 'HAS_ACTIVE_POOL' });
 
     // Privacy: nobody reads another passenger's ride.
     expect((await nusrat.get(`/rides/${rafiqRide.body.id}`)).status).toBe(403);
@@ -194,7 +193,8 @@ describe('A full trip, end to end (e2e)', () => {
     await jashim
       .post(`/driver/pool/passengers/${shirinRide.body.id}/pickup`)
       .expect(200);
-    // …but Karim is not there.
+    // …but Karim is not there. The car waits the no-show time first.
+    await waitedAtStop(app);
     const noShow = await jashim.post(
       `/driver/pool/passengers/${karimSecond.body.id}/no-show`,
     );
@@ -245,7 +245,10 @@ describe('A full trip, end to end (e2e)', () => {
     const karimHistory = (
       await karim.get(`/rides/${karimSecond.body.id}`)
     ).body.history.map((event: { reason: string }) => event.reason);
-    expect(karimHistory).toContain('Did not show up at Mohakhali');
+    // The car waited the no-show time, which is past the grace period: Tk 20 (D-018).
+    expect(karimHistory).toContain(
+      'Did not show up at Mohakhali; Tk 20 fee, paid with the next ride',
+    );
 
     // ---------- the money: driver paid for the work, platform keeps the rest ----------
     const trips = await jashim.get('/driver/trips');

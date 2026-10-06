@@ -16,6 +16,7 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionAuthGuard } from '../auth/guards/session-auth.guard.js';
 import { Role } from '../generated/prisma/client.js';
 import { PublishChangesInterceptor } from '../realtime/publish-changes.interceptor.js';
+import { CancelRideDto } from './dto/cancel-ride.dto.js';
 import { RequestRideDto } from './dto/request-ride.dto.js';
 import { RidesService } from './rides.service.js';
 
@@ -28,7 +29,8 @@ import { RidesService } from './rides.service.js';
 export class RidesController {
   constructor(private readonly ridesService: RidesService) {}
 
-  // POST /rides → request a ride (joins a Tesla on its way at once if one fits)
+  // POST /rides → request a ride: answers REQUESTED; the next match round seats it if a
+  // running trip fits
   @Post()
   requestRide(@CurrentUser() user: PublicUser, @Body() body: RequestRideDto) {
     return this.ridesService.requestRide(
@@ -39,10 +41,18 @@ export class RidesController {
     );
   }
 
-  // GET /rides/current → the active ride, or null
+  // GET /rides/current → the active ride, or null; with no active ride, the one that ended in
+  // the last 30 minutes (the fare to pay, or why it ended), or null
   @Get('current')
   async current(@CurrentUser() user: PublicUser) {
-    return { ride: await this.ridesService.getCurrentRide(user.id) };
+    const ride = await this.ridesService.getCurrentRide(user.id);
+    return {
+      ride,
+      lastEnded:
+        ride === null
+          ? await this.ridesService.getRecentlyEndedRide(user.id)
+          : null,
+    };
   }
 
   // GET /rides → ride history, newest first
@@ -66,7 +76,8 @@ export class RidesController {
   cancel(
     @CurrentUser() user: PublicUser,
     @Param('id', ParseUUIDPipe) rideId: string,
+    @Body() body: CancelRideDto,
   ) {
-    return this.ridesService.cancelRide(user.id, rideId);
+    return this.ridesService.cancelRide(user.id, rideId, body.expectedFeePaisa);
   }
 }

@@ -2,6 +2,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { RealtimeService } from '../src/realtime/realtime.service.js';
 import { MATCH_REASON } from '../src/rides/matcher.service.js';
 import {
   createDriver,
@@ -275,67 +276,86 @@ describe('Broadcast to drivers, first accept wins, live updates (e2e)', () => {
       )[0];
     };
 
-    /** Opens the stream and resolves with the first "change" event it receives. */
-    function firstChange(cookie: string, abort: AbortController) {
-      return new Promise<{ topics: string[] }>((resolve, reject) => {
-        void fetch(`${baseUrl}/events/stream`, {
-          headers: { cookie },
-          signal: abort.signal,
-        })
-          .then(async (response) => {
-            expect(response.headers.get('content-type')).toContain(
-              'text/event-stream',
-            );
-            const reader = response.body!.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            for (;;) {
-              const { value, done } = await reader.read();
-              if (done) return;
-              buffer += decoder.decode(value);
-              // Nest writes each event as `event: …`, `id: …`, `data: …`, then a blank line.
-              const match = /event: change\n(?:id: .*\n)?data: (.+)\n/.exec(
-                buffer,
-              );
-              if (match) {
-                resolve(JSON.parse(match[1]) as { topics: string[] });
-                return;
-              }
-            }
-          })
-          .catch((error: unknown) => {
-            if (!abort.signal.aborted) reject(error);
-          });
+    /**
+     * Opens the stream and resolves once its headers have arrived: Nest subscribes the stream
+     * in the same tick as it sends them, so from then on no change can be missed (no sleep).
+     * `firstChange` resolves with the first "change" event.
+     */
+    async function openStream(cookie: string, abort: AbortController) {
+      const response = await fetch(`${baseUrl}/events/stream`, {
+        headers: { cookie },
+        signal: abort.signal,
       });
+      expect(response.headers.get('content-type')).toContain(
+        'text/event-stream',
+      );
+      const reader = response.body!.getReader();
+      const firstChange = (async () => {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error('stream ended before a change');
+          buffer += decoder.decode(value);
+          // Nest writes each event as `event: …`, `id: …`, `data: …`, then a blank line.
+          const match = /event: change\n(?:id: .*\n)?data: (.+)\n/.exec(buffer);
+          if (match) {
+            return JSON.parse(match[1]) as { topics: string[] };
+          }
+        }
+      })();
+      // Aborting at the end of a test rejects the pending read: that is not a failure.
+      firstChange.catch(() => undefined);
+      return { firstChange };
     }
 
     it('a driver’s screen hears about a new request the moment it is saved', async () => {
       const cookie = await cookieOf('jashim@teslapool.test', 'DRIVER');
       const abort = new AbortController();
-      const heard = firstChange(cookie, abort);
-      await new Promise((resolve) => setTimeout(resolve, 200)); // let the stream open
+      const stream = await openStream(cookie, abort);
 
       const nusrat = await loginAs(app, 'nusrat@teslapool.test');
       await nusrat.post('/rides').send(trip(BAN, MOH)).expect(201);
 
-      const event = await heard;
+      const event = await stream.firstChange;
       abort.abort();
       expect(event.topics).toEqual(['requests', 'rides']);
     });
 
-    it('a passenger hears only that rides changed, and reads never publish', async () => {
+    it('a passenger hears only that rides changed', async () => {
       const cookie = await cookieOf('nusrat@teslapool.test', 'PASSENGER');
       const abort = new AbortController();
-      const heard = firstChange(cookie, abort);
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      const stream = await openStream(cookie, abort);
 
       const jashim = await loginAs(app, 'jashim@teslapool.test');
-      await jashim.get('/driver/requests').expect(200); // a read: no event
       await jashim.post('/driver/online').expect(200); // an action: one event
 
-      const event = await heard;
+      const event = await stream.firstChange;
       abort.abort();
       expect(event.topics).toEqual(['rides']);
+    });
+
+    it('reads never publish; an action publishes once', async () => {
+      // Watched at the source, so a read that published would be seen whatever the topics.
+      const published: string[][] = [];
+      const subscription = app
+        .get(RealtimeService)
+        .stream.subscribe((topics) => published.push(topics));
+      try {
+        const jashim = await loginAs(app, 'jashim@teslapool.test');
+        await jashim.get('/driver/pool').expect(200);
+        await jashim.get('/driver/requests').expect(200);
+        await jashim.get('/driver/trips').expect(200);
+        const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+        await nusrat.get('/rides/current').expect(200);
+        await nusrat.get('/rides').expect(200);
+        expect(published).toEqual([]);
+
+        await jashim.post('/driver/online').expect(200);
+        expect(published).toEqual([['requests', 'rides']]);
+      } finally {
+        subscription.unsubscribe();
+      }
     });
 
     it('needs a session', async () => {

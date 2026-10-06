@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BeforeApplicationShutdown, Injectable } from '@nestjs/common';
 import { Observable, Subject } from 'rxjs';
 import { Role } from '../generated/prisma/client.js';
 
@@ -7,7 +7,7 @@ import { Role } from '../generated/prisma/client.js';
  * data again through the normal, authorised endpoints, so an event never carries anyone's
  * ride, fare or name.
  *   requests: the set of waiting requests changed (a new one, taken, cancelled);
- *   rides:    some ride or trip changed (a join, a stop action, a cancel, a refill).
+ *   rides:    some ride or trip changed (a join, a stop action, a cancel, a match round).
  */
 export type Topic = 'requests' | 'rides';
 
@@ -22,8 +22,9 @@ export function topicsFor(role: Role): Topic[] {
  * PostgreSQL LISTEN/NOTIFY or a Redis channel, so every instance hears every change.
  */
 @Injectable()
-export class RealtimeService {
+export class RealtimeService implements BeforeApplicationShutdown {
   private readonly changes = new Subject<Topic[]>();
+  private readonly closing = new Subject<void>();
 
   publish(topics: Topic[]): void {
     this.changes.next(topics);
@@ -31,5 +32,18 @@ export class RealtimeService {
 
   get stream(): Observable<Topic[]> {
     return this.changes.asObservable();
+  }
+
+  /** Emits once when the app starts shutting down: open streams end on it. */
+  get shutdown(): Observable<void> {
+    return this.closing.asObservable();
+  }
+
+  // An open stream never ends by itself (its heartbeat keeps it going), and the HTTP server
+  // waits for every open response before it closes. So end the streams first; browsers
+  // reconnect to the next instance.
+  beforeApplicationShutdown(): void {
+    this.closing.next();
+    this.closing.complete();
   }
 }

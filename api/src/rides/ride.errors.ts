@@ -18,6 +18,8 @@ export type RideErrorCode =
   | 'POOL_NOT_OPEN' // the trip has already ended
   | 'NOT_COMPATIBLE' // not on the route in this direction, or the car has passed the pickup
   | 'SEATS_UNAVAILABLE' // not enough free seats
+  | 'TOO_EARLY' // e.g. a no-show before the car has waited at the stop
+  | 'FEE_CHANGED' // the cancel fee is now higher than the one the passenger saw
   | 'BUSY'; // the vehicle was locked by another action for too long; retry
 
 export class RideError extends Error {

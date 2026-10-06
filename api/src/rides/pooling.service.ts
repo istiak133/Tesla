@@ -7,6 +7,7 @@ import {
 } from '../geography/geography.repository.js';
 import { Pool, RideRequest, RideStatus } from '../generated/prisma/client.js';
 import { joinProblem, tripStops } from '../pooling/route-plan.js';
+import { isSilent } from './driver-presence.js';
 import { RideError } from './ride.errors.js';
 import {
   ACTIVE_POOL_STATUSES,
@@ -143,6 +144,7 @@ export class PoolingService {
   /**
    * Takes a ride that has not been picked up out of its pool and frees its seats:
    * a passenger cancel, or the driver marking a no-show. Closes the pool if it is now empty.
+   * With `maxFeePaisa`, refuses (FEE_CHANGED) instead of charging a higher fee.
    */
   async leaveUnderLock(
     tx: Tx,
@@ -150,6 +152,7 @@ export class PoolingService {
     ride: RideRequest,
     actorUserId: string,
     reason: string,
+    maxFeePaisa?: number,
   ): Promise<void> {
     const membership = await tx.poolMember.findFirst({
       where: { poolId, rideRequestId: ride.id, leftAt: null },
@@ -160,13 +163,29 @@ export class PoolingService {
 
     // Late cancel or no-show: Tk 20 once the car is coming straight to this stop or is
     // there (D-018). Paid in cash with the passenger's next ride; this trip's driver earns it.
-    const pool = await tx.pool.findUniqueOrThrow({ where: { id: poolId } });
-    const fee = cancellationFeePaisa({
-      carStop: pool.currentStop,
-      pickupStop: membership.pickupStop,
-      joinedAt: membership.joinedAt,
-      now: new Date(),
+    // No fee when the driver's app has gone silent: the car may never come. A no-show is the
+    // driver's own request, which marks the driver as seen first.
+    const pool = await tx.pool.findUniqueOrThrow({
+      where: { id: poolId },
+      include: { vehicle: true },
     });
+    const now = new Date();
+    const fee = isSilent(pool.vehicle.lastSeenAt, now)
+      ? 0
+      : cancellationFeePaisa({
+          carStop: pool.currentStop,
+          pickupStop: membership.pickupStop,
+          joinedAt: membership.joinedAt,
+          now,
+        });
+    // The passenger agreed to a smaller fee than this one (the car reached their stop since
+    // their screen loaded): ask again instead of charging what they did not see.
+    if (maxFeePaisa !== undefined && fee > maxFeePaisa) {
+      throw new RideError(
+        'FEE_CHANGED',
+        `The car has just reached your stop: cancelling now costs Tk ${fee / 100}`,
+      );
+    }
 
     await tx.rideRequest.update({
       where: { id: ride.id },

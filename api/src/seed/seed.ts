@@ -1,5 +1,5 @@
 // Demo data: the 14 Dhaka zones, their distances and the Tesla routes, and the PRD's story cast.
-// Safe to run many times (everything is upserted).
+// Safe to run many times (everything is upserted; an existing route's stops are never rewritten).
 //
 // Run:  npm run build && npm run db:seed
 import 'dotenv/config';
@@ -17,8 +17,14 @@ async function main() {
   });
 
   try {
-    await seedGeography(prisma);
+    const { routesLeftAsTheyAre } = await seedGeography(prisma);
     console.log('seeded zones, distances and routes');
+    if (routesLeftAsTheyAre.length > 0) {
+      console.warn(
+        `route stops in the code differ from the database, left as they are: ${routesLeftAsTheyAre.join(', ')}. ` +
+          'Trips store stop positions, so change a route with a new route code and a data migration.',
+      );
+    }
     await seedCast(prisma);
     console.log('seeded the story cast');
   } finally {

@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import { homeFor, useLogout, useSession } from "@/lib/session";
 import type { Role, User } from "@/lib/types";
 import { SiteFooter, SiteHeader } from "./site-chrome";
-import { Button, Loading } from "./ui";
+import { Button, ErrorNote, Loading } from "./ui";
 
 /**
  * Page frame for logged-in screens. Sends visitors to /login if they are not logged in,
@@ -53,7 +53,19 @@ export function AppShell({
         }
       />
       <main className="mx-auto w-full max-w-5xl flex-1 px-5 py-8">
-        {session.isPending || !user || user.role !== role ? (
+        {session.isError ? (
+          // Not a 401 (that is "logged out"): the server or the network failed, for example
+          // while the API is waking up. Say so and offer a retry instead of spinning.
+          <div className="mx-auto max-w-md space-y-4 py-10 text-center">
+            <ErrorNote message={session.error.message} />
+            <Button
+              loading={session.isFetching}
+              onClick={() => void session.refetch()}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : session.isPending || !user || user.role !== role ? (
           <Loading label="Loading your account…" />
         ) : (
           children(user)

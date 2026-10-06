@@ -71,6 +71,38 @@ describe('Driver cancels a trip (e2e)', () => {
     expect(stored.cancellationFeePaisa).toBe(0);
   });
 
+  it("a cancelled trip's history never shows a rider another car later carried", async () => {
+    const { jashim, rideId } = await nusratWithJashim();
+    await jashim.post('/driver/pool/cancel').expect(200);
+
+    // Kamal, idle at Banani, takes Nusrat and drops her at Mohakhali.
+    await createDriver(app, {
+      name: 'Kamal',
+      email: 'kamal@teslapool.test',
+      zoneCode: 'BAN',
+      routeCode: 'UTT-BSH',
+    });
+    const kamal = await loginAs(app, 'kamal@teslapool.test');
+    await kamal.post('/driver/online').expect(200);
+    await kamal.post(`/driver/requests/${rideId}/accept`).expect(200);
+    await kamal.post('/driver/pool/arrive').expect(200);
+    await kamal.post(`/driver/pool/passengers/${rideId}/pickup`).expect(200);
+    await kamal.post('/driver/pool/depart').expect(200);
+    await kamal.post('/driver/pool/arrive').expect(200);
+    await kamal.post(`/driver/pool/passengers/${rideId}/dropoff`).expect(200);
+
+    // Jashim's cancelled trip carried nobody; Kamal's shows her with her fare.
+    const jashimTrips = (await jashim.get('/driver/trips')).body;
+    expect(jashimTrips[0]).toMatchObject({ status: 'CANCELLED' });
+    expect(jashimTrips[0].passengers).toEqual([]);
+    const kamalTrips = (await kamal.get('/driver/trips')).body;
+    expect(kamalTrips[0].passengers).toHaveLength(1);
+    // Her only seat on record is Kamal's.
+    expect(
+      await prisma.poolMember.count({ where: { rideRequestId: rideId } }),
+    ).toBe(1);
+  });
+
   it('a running car that can take them seats them at once, like a new request', async () => {
     // Jashim's car is full at Banani: Nusrat 2 seats and Shirin 1, both to Mohakhali.
     const jashim = await loginAs(app, 'jashim@teslapool.test');

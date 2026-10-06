@@ -6,6 +6,7 @@ import {
   resetDatabase,
   runMatcher,
   seedStoryCast,
+  waitedAtStop,
   zoneId,
 } from './helpers/test-app.js';
 
@@ -15,6 +16,9 @@ describe('Trip lifecycle (e2e)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
   let BAN: string, MOH: string, GL1: string;
+
+  // A race runs several fresh databases and logins: more than the 20 s default.
+  const RACE_TIMEOUT_MS = 60_000;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -91,19 +95,40 @@ describe('Trip lifecycle (e2e)', () => {
       currentStop: 2,
     });
     await jashim.post('/driver/pool/arrive').expect(200);
-    await jashim.post(dropoff(nusratRideId)).expect(200);
+    const nusratOff = await jashim.post(dropoff(nusratRideId)).expect(200);
+    // The driver sees what to collect: the final fare, not the estimate.
+    expect(nusratOff.body.receipt).toEqual({
+      rideId: nusratRideId,
+      passengerName: 'Nusrat',
+      finalFarePaisa: 6000,
+      duesCollectedPaisa: 0,
+      totalPaisa: 6000,
+      shared: true,
+    });
     const nusratDone = await nusrat.get('/rides');
     expect(nusratDone.body[0]).toMatchObject({
       status: 'COMPLETED',
       farePaisa: 6000,
     });
-    expect((await nusrat.get('/rides/current')).body.ride).toBeNull();
+    // No active ride, but her screen still shows the ride that just ended, with the fare.
+    const afterDropOff = (await nusrat.get('/rides/current')).body;
+    expect(afterDropOff.ride).toBeNull();
+    expect(afterDropOff.lastEnded).toMatchObject({
+      id: nusratRideId,
+      status: 'COMPLETED',
+      finalFarePaisa: 6000,
+    });
 
     // Gulshan 1: Rafiq gets off. Nobody is left, so the trip is complete.
     await jashim.post('/driver/pool/depart').expect(200);
     await jashim.post('/driver/pool/arrive').expect(200);
     const last = await jashim.post(dropoff(rafiqRideId));
     expect(last.body.pool).toBeNull();
+    // The trip is closed, but the answer still says what to collect from the last rider.
+    expect(last.body.receipt).toMatchObject({
+      passengerName: 'Rafiq',
+      totalPaisa: 7200,
+    });
     expect((await rafiq.get(`/rides/${rafiqRideId}`)).body).toMatchObject({
       status: 'COMPLETED',
       finalFarePaisa: 7200,
@@ -240,6 +265,22 @@ describe('Trip lifecycle (e2e)', () => {
       await nusratAndRafiqPooled();
     await jashim.post('/driver/pool/arrive').expect(200);
 
+    // Not before the car has waited at the stop.
+    const early = await jashim.post(
+      `/driver/pool/passengers/${nusratRideId}/no-show`,
+    );
+    expect(early.status).toBe(409);
+    expect(early.body).toMatchObject({
+      code: 'TOO_EARLY',
+      message: 'Wait 3 minutes at the stop before marking a no-show',
+    });
+    expect(
+      (await jashim.get('/driver/pool')).body.pool.passengers.find(
+        (p: { rideId: string }) => p.rideId === nusratRideId,
+      ).noShowFrom,
+    ).not.toBeNull();
+
+    await waitedAtStop(app);
     const noShow = await jashim.post(
       `/driver/pool/passengers/${nusratRideId}/no-show`,
     );
@@ -247,6 +288,10 @@ describe('Trip lifecycle (e2e)', () => {
     expect((await nusrat.get(`/rides/${nusratRideId}`)).body.status).toBe(
       'CANCELLED',
     );
+    // Her screen says why the ride ended.
+    const ended = (await nusrat.get('/rides/current')).body.lastEnded;
+    expect(ended.status).toBe('CANCELLED');
+    expect(ended.history.at(-1).reason).toMatch(/^Did not show up at Banani/);
 
     await jashim
       .post(`/driver/pool/passengers/${rafiqRideId}/no-show`)
@@ -257,6 +302,52 @@ describe('Trip lifecycle (e2e)', () => {
     // Nobody was ever in the car, so the trip is cancelled, not completed.
     const pool = await prisma.pool.findFirstOrThrow();
     expect(pool.status).toBe('CANCELLED');
+  });
+
+  it('a rider seated at the stop after the car arrived does not stop it leaving; she waits again, free', async () => {
+    const { jashim, nusratRideId, rafiqRideId } = await nusratAndRafiqPooled();
+    await jashim.post('/driver/pool/arrive').expect(200);
+    await jashim.post(pickup(nusratRideId)).expect(200);
+    await jashim.post(pickup(rafiqRideId)).expect(200);
+
+    // Shirin asks at Banani while Bullet stands there: the round seats her at once…
+    const shirin = await loginAs(app, 'shirin@teslapool.test');
+    const ride = await shirin
+      .post('/rides')
+      .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
+    expect((await runMatcher(app)).seated).toBe(1);
+    expect((await shirin.get('/rides/current')).body.ride.status).toBe(
+      'DRIVER_ARRIVED',
+    );
+
+    const shirinSeat = (
+      await jashim.get('/driver/pool')
+    ).body.pool.passengers.find((p: { name: string }) => p.name === 'Shirin');
+    expect(shirinSeat).toMatchObject({ seatedAfterArrival: true });
+    // …but she may be far away inside the zone, so the driver can still leave.
+    const left = await jashim.post('/driver/pool/depart').expect(200);
+    expect(left.body.pool).toMatchObject({ status: 'STARTED', seatsTaken: 2 });
+    const now = (await shirin.get('/rides/current')).body.ride;
+    expect(now.status).toBe('REQUESTED');
+    expect(now.cancellationFeePaisa).toBe(0);
+    expect(now.history.at(-1).reason).toBe(
+      'The car left Banani before you reached it; finding you another seat',
+    );
+    expect(ride.body.id).toBe(now.id);
+    // The seat is taken back, so this trip can never count her ride if another car carries her.
+    expect(
+      await prisma.poolMember.count({ where: { rideRequestId: now.id } }),
+    ).toBe(0);
+  });
+
+  it('a rider seated before the car arrived still holds it until picked up or a no-show', async () => {
+    const { jashim } = await nusratAndRafiqPooled();
+    await jashim.post('/driver/pool/arrive').expect(200);
+    const leave = await jashim.post('/driver/pool/depart');
+    expect(leave.status).toBe(409);
+    expect(leave.body.message).toBe(
+      'Pick up, drop off or mark no-show everyone at this stop first',
+    );
   });
 
   it('a driver cancelling before the first pickup sends passengers back to waiting', async () => {
@@ -278,31 +369,35 @@ describe('Trip lifecycle (e2e)', () => {
     expect(waiting.body).toHaveLength(2);
   });
 
-  it('a passenger cancelling while the driver cancels the trip always gets a clean answer', async () => {
-    // Race both ways several times: whichever wins, Nusrat ends CANCELLED with a 200,
-    // never a wrong 409, and Rafiq is back to waiting.
-    for (let round = 0; round < 5; round++) {
-      await resetDatabase(app);
-      await seedStoryCast(app);
-      BAN = await zoneId(app, 'BAN');
-      MOH = await zoneId(app, 'MOH');
-      GL1 = await zoneId(app, 'GL1');
-      const { jashim, nusrat, rafiq, nusratRideId } =
-        await nusratAndRafiqPooled();
+  it(
+    'a passenger cancelling while the driver cancels the trip always gets a clean answer',
+    { timeout: RACE_TIMEOUT_MS },
+    async () => {
+      // Race both ways several times: whichever wins, Nusrat ends CANCELLED with a 200,
+      // never a wrong 409, and Rafiq is back to waiting.
+      for (let round = 0; round < 5; round++) {
+        await resetDatabase(app);
+        await seedStoryCast(app);
+        BAN = await zoneId(app, 'BAN');
+        MOH = await zoneId(app, 'MOH');
+        GL1 = await zoneId(app, 'GL1');
+        const { jashim, nusrat, rafiq, nusratRideId } =
+          await nusratAndRafiqPooled();
 
-      const [passengerCancel, driverCancel] = await Promise.all([
-        nusrat.post(`/rides/${nusratRideId}/cancel`),
-        jashim.post('/driver/pool/cancel'),
-      ]);
+        const [passengerCancel, driverCancel] = await Promise.all([
+          nusrat.post(`/rides/${nusratRideId}/cancel`),
+          jashim.post('/driver/pool/cancel'),
+        ]);
 
-      expect(passengerCancel.status).toBe(200);
-      expect(passengerCancel.body.status).toBe('CANCELLED');
-      expect(driverCancel.status).toBe(200);
-      expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
-        'REQUESTED',
-      );
-    }
-  });
+        expect(passengerCancel.status).toBe(200);
+        expect(passengerCancel.body.status).toBe('CANCELLED');
+        expect(driverCancel.status).toBe(200);
+        expect((await rafiq.get('/rides/current')).body.ride.status).toBe(
+          'REQUESTED',
+        );
+      }
+    },
+  );
 
   it('a driver cannot cancel once someone has been picked up', async () => {
     const { jashim, nusratRideId } = await nusratAndRafiqPooled();

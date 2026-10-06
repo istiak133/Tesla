@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { noShowAllowedFrom } from '../fares/cancellation.js';
 import {
   GeographyRepository,
   toStops,
@@ -40,6 +41,9 @@ export type WaitingRequestView = {
   canAccept: boolean;
   reason: string | null;
 };
+
+// The most requests one driver's list shows.
+const WAITING_LIST_LIMIT = 50;
 
 // Passengers the driver still sees in the trip: waiting, on board, or dropped off.
 const SHOWN_IN_TRIP: RideStatus[] = [
@@ -216,7 +220,6 @@ export class DriverService {
   async listWaitingRequests(driverId: string): Promise<WaitingRequestView[]> {
     const vehicle = await this.getVehicle(driverId);
     const pool = await this.ridesRepository.findActivePoolDetails(vehicle.id);
-    const waiting = await this.ridesRepository.listWaitingRequests();
     const openTrips = await this.ridesRepository.listOpenTrips();
     const routes = await this.geographyRepository.listRoutes();
     const route = routes.find((r) => r.id === vehicle.routeId);
@@ -225,6 +228,33 @@ export class DriverService {
     // Where the car is on its route: the trip's current stop, or the car's zone between trips.
     const carStop =
       pool !== null ? pool.currentStop : stopOf(stops, vehicle.currentZoneId);
+
+    // Read only requests this car's route can carry from where it is, so old requests nobody
+    // can serve never fill the list's window (requests do not expire).
+    const target =
+      pool !== null
+        ? {
+            routeId: pool.routeId,
+            fromStop: pool.currentStop,
+            freeSeats: pool.seatCapacity - pool.seatsTaken,
+          }
+        : route !== undefined && carStop !== null
+          ? {
+              routeId: route.id,
+              fromStop: carStop,
+              freeSeats: vehicle.seatCapacity,
+            }
+          : null;
+    const servable =
+      target === null
+        ? []
+        : await this.ridesRepository.listWaitingServable(
+            [target],
+            WAITING_LIST_LIMIT,
+          );
+    const waiting = await this.ridesRepository.findWaitingRequestsByIds(
+      servable.map((ride) => ride.id),
+    );
 
     const listed = waiting.map((ride) => {
       // This check is only advice for the screen. The real check runs under the lock on accept.
@@ -291,6 +321,22 @@ export class DriverService {
   async acceptRequest(driverId: string, rideId: string) {
     const vehicle = await this.getVehicle(driverId);
 
+    // A request that a running trip can carry belongs to the matcher (D-023), not to a
+    // driver's tap: a stale screen must not start a second car for a rider a car already on
+    // the way had room for. Read before the lock, so the transaction never waits for a second
+    // connection; a trip that opens in between only means the matcher was not asked.
+    const waiting = await this.ridesRepository.findRide(rideId);
+    if (
+      waiting !== null &&
+      waiting.status === RideStatus.REQUESTED &&
+      fitsAnOpenTrip(await this.ridesRepository.listOpenTrips(), waiting)
+    ) {
+      throw new RideError(
+        'ALREADY_TAKEN',
+        'A Tesla already on the way is taking this rider',
+      );
+    }
+
     await this.ridesRepository.withVehicleLock(vehicle.id, async (tx) => {
       // Read again under the lock: these may have changed since the screen loaded.
       const lockedVehicle = await tx.vehicle.findUniqueOrThrow({
@@ -316,30 +362,38 @@ export class DriverService {
         );
       }
 
-      let pool = await tx.pool.findFirst({
+      const running = await tx.pool.findFirst({
         where: { vehicleId: vehicle.id, status: { in: ACTIVE_POOL_STATUSES } },
       });
-      if (pool === null) {
-        // First passenger: a new trip on this route that starts where the car is, so the
-        // car drives stop by stop to the pickup (and can take others on the way).
-        // Because the vehicle row is locked, two accepts can never create two trips.
-        const stops = await this.ridesRepository.findRouteStops(
-          tx,
-          lockedVehicle.routeId,
+      // Only a trip's first passenger goes through a driver (D-020, D-023). Riders join a
+      // running trip at the next match round, so a running car's own tap could undo the plan
+      // (a rider another request needed that seat for).
+      if (running !== null) {
+        throw new RideError(
+          'HAS_ACTIVE_POOL',
+          'Riders join your trip automatically',
         );
-        const start = newTripStart(stops, lockedVehicle.currentZoneId, ride);
-        if ('problem' in start) {
-          throw new RideError('NOT_COMPATIBLE', start.problem);
-        }
-        pool = await tx.pool.create({
-          data: {
-            vehicleId: vehicle.id,
-            routeId: lockedVehicle.routeId,
-            currentStop: start.startStop,
-            seatCapacity: lockedVehicle.seatCapacity,
-          },
-        });
       }
+
+      // First passenger: a new trip on this route that starts where the car is, so the
+      // car drives stop by stop to the pickup (and can take others on the way).
+      // Because the vehicle row is locked, two accepts can never create two trips.
+      const stops = await this.ridesRepository.findRouteStops(
+        tx,
+        lockedVehicle.routeId,
+      );
+      const start = newTripStart(stops, lockedVehicle.currentZoneId, ride);
+      if ('problem' in start) {
+        throw new RideError('NOT_COMPATIBLE', start.problem);
+      }
+      const pool = await tx.pool.create({
+        data: {
+          vehicleId: vehicle.id,
+          routeId: lockedVehicle.routeId,
+          currentStop: start.startStop,
+          seatCapacity: lockedVehicle.seatCapacity,
+        },
+      });
 
       await this.poolingService.joinUnderLock(
         tx,
@@ -361,10 +415,15 @@ export class DriverService {
     const pools = await this.ridesRepository.listPastPools(vehicle.id);
 
     return pools.map((pool) => {
-      // Passengers who were dropped off (cancelled riders and no-shows are left out).
-      const riders = pool.members.filter(
-        (member) => member.rideRequest.status === RideStatus.COMPLETED,
-      );
+      // Passengers who were dropped off (cancelled riders and no-shows are left out). A
+      // cancelled trip carried nobody: its riders went back to waiting, and one another car
+      // later carried must not show up here with that other trip's fare.
+      const riders =
+        pool.status === RideStatus.COMPLETED
+          ? pool.members.filter(
+              (member) => member.rideRequest.status === RideStatus.COMPLETED,
+            )
+          : [];
 
       return {
         id: pool.id,
@@ -462,6 +521,18 @@ export class DriverService {
                   estimatedFarePaisa: member.rideRequest.estimatedFarePaisa,
                   finalFarePaisa: member.rideRequest.finalFarePaisa,
                   duesPaisa: duesByRide.get(member.rideRequestId) ?? 0,
+                  // Seated by the matcher while the car stood at this stop: they do not
+                  // hold the car; leaving sends them back to waiting, free.
+                  seatedAfterArrival:
+                    member.rideRequest.status === RideStatus.DRIVER_ARRIVED &&
+                    pool.arrivedAt !== null &&
+                    member.joinedAt > pool.arrivedAt,
+                  // When "no-show" opens for a rider waiting at this stop (null otherwise).
+                  noShowFrom:
+                    member.rideRequest.status === RideStatus.DRIVER_ARRIVED &&
+                    pool.arrivedAt !== null
+                      ? noShowAllowedFrom(pool.arrivedAt, member.joinedAt)
+                      : null,
                 })),
             },
     };

@@ -64,6 +64,8 @@ export default function SignupPage() {
         : api<User>("/auth/signup/passenger", { method: "POST", body: common });
     },
     onSuccess: (user) => {
+      // A new user in this tab: nothing cached for an earlier one may show.
+      queryClient.removeQueries();
       queryClient.setQueryData(["me"], user);
       router.replace(homeFor(user));
     },

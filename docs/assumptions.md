@@ -138,7 +138,7 @@ This is **en-route pooling**: a Tesla that is already on its way keeps picking p
 | Case | Trip | Result |
 |---|---|---|
 | Nusrat, first | Banani → Mohakhali | Jashim accepts; the trip starts on his route, heading to Banani |
-| Rafiq | Banani → Gulshan 1 | Same route ahead → joins at once |
+| Rafiq | Banani → Gulshan 1 | Same route ahead → seated by the next match round (no driver tap) |
 | Shirin, while Bullet drives Banani → Mohakhali | Mohakhali → Bashundhara | Mohakhali is ahead → joins on the way |
 | Anyone, after Bullet left Banani | Banani → Gulshan 1 | R2 fails: "The car has already passed Banani" |
 | Anyone | Banani → Uttara | R1 fails: the opposite direction |
@@ -150,15 +150,17 @@ flowchart TD
     A[Passenger submits request] --> B{Some route serves<br/>pickup → destination?}
     B -- No --> X[400 NO_ROUTE]
     B -- Yes --> C[Status: REQUESTED]
-    C --> D{Active pool that passes<br/>R1 – R4?}
-    D -- Yes --> E[Take seats under the vehicle lock]
+    C --> D{A running trip, driver not silent,<br/>that passes R1 – R4?}
+    D -- Yes --> M[Next match round<br/>plans all waiting riders together]
+    M --> E[Take seats under the vehicle lock,<br/>R1 – R4 checked again]
     E --> F[Status: MATCHED]
-    D -- No --> G[Visible to online drivers]
-    G --> H{Driver accepts.<br/>Driver has an active pool?}
-    H -- No --> I[New pool on the driver's route,<br/>heading to this pickup]
-    H -- Yes, passes R1 – R4 --> E
+    D -- No --> G[Listed to idle drivers<br/>whose car can take it]
+    G --> H[First accept wins:<br/>compare-and-set on the request]
+    H --> I[New pool at the car's own stop,<br/>on the driver's route]
     I --> E
 ```
+
+A driver already on a trip cannot accept anyone (`409 HAS_ACTIVE_POOL`): riders join a running trip only through the match round (decisions D-023, D-024).
 
 ### 4.4 Automatic Join and Driver Accept
 
@@ -168,11 +170,13 @@ flowchart TD
   - It is an exact search.
   - Each trip in the plan is applied under its car's lock with R1 – R4 checked again. A seat that no longer fits is skipped, and its ride waits for the next round.
   - Only cars already on a trip are considered.
-- **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool can accept only requests that pass R1 – R4.
+- **Driver accept:** a driver with no active pool starts one **at the car's own stop**, and the car drives stop by stop to the pickup. A pickup behind the car is refused ("Behind your car"), as is a car that is not on the route; a route must also pass the car's zone to be chosen. A driver with an active pool cannot accept: riders join a running trip only through the match round (D-024). An accept of a request that a running trip can carry is refused too.
 - **Broadcast, first accept wins:** a request that fits a running trip belongs to the next round and is shown to no driver. A request that fits no running trip is shown to every driver whose car can take it, and only to them; the first accept gets it (compare-and-set on the request), and the late one is told "Another driver took this request". It leaves every other list at once over Server-Sent Events (decision D-020).
 - **A freed seat is filled at the next round:** after a cancel, a no-show or a drop-off, the round seats waiting riders who fit (decision D-017, now through D-023). No driver tap, no seat hold.
 - **Only the first passenger goes through the driver:** after an accept, the next round seats the waiting riders who fit the new trip (decision D-022, now through D-023). So two riders who ask at once while no trip exists both go to the drivers, and once one is accepted, the other is seated without a second tap.
-- **Waiting list order:** takeable requests waiting 5 minutes or more first (oldest first, so no one waits for ever), then the other takeable ones by nearest pickup, then the ones the driver cannot take, each with its reason. Every item shows how far ahead its pickup is.
+- **Waiting list order:** only requests the car can take are listed: those waiting 5 minutes or more first (oldest first, so no one waits for ever), then the others by nearest pickup. Every item shows how far ahead its pickup is. The route checks run in the database before the list's limit, so old requests no car can serve never fill it (D-024).
+- **A driver who goes silent (D-024):** with no GPS, presence is any driver request or the driver's open live stream. After 2 minutes of silence the trip gets no new riders (its requests go back to idle drivers) and its riders can cancel for free; after 15 minutes a rider on board may end the ride.
+- **A late joiner does not hold the car (D-024):** a rider the round seats at the stop where the car already stands goes back to waiting, free, if the driver leaves first.
 
 ### 4.5 Constraints
 
@@ -279,8 +283,8 @@ Fares are locked at drop-off. If Rafiq cancels before being picked up, Nusrat ri
 
 | Rule | Detail |
 |---|---|
-| **Cancel trip** | Before the first pickup only (e.g. a breakdown). All members return to `REQUESTED`, not `CANCELLED`, with no fee, and are offered again at once, oldest request first: a running car that fits seats them, otherwise idle cars that can take them see them (decision D-021). |
-| **No-show** | At the passenger's stop, the driver can mark them as not there: the ride is `CANCELLED` and the seat is freed. |
+| **Cancel trip** | Before the first pickup only (e.g. a breakdown). All members return to `REQUESTED`, not `CANCELLED`, with no fee, and are offered again at the next match round (by its score): a running car that fits seats them, otherwise idle cars that can take them see them (decisions D-021, D-023). |
+| **No-show** | At the passenger's stop, the driver can mark them as not there, after waiting 3 minutes at the stop (from the arrival, or from the seat if later; D-024): the ride is `CANCELLED` with the ৳20 fee, and the seat is freed. |
 | **Audit** | The reason is recorded in the history. |
 
 ---
@@ -391,14 +395,14 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-07 | One active pool per driver; one active request per passenger; the route changes only between trips. | [4.5](#45-constraints) |
 | A-08 | `MATCHED` covers both "accepted" and "joined a pool". | [5.4](#54-deviation-from-the-brief) |
 | A-09 | Every passenger status change is recorded in an audit table. | [5.5](#55-audit-trail) |
-| A-10 | Passengers can cancel until picked up, with no fee; drivers can mark no-shows. | [6](#6-cancellation-rules) |
+| A-10 | Passengers can cancel until picked up, with a ৳20 fee once the car is coming to their stop (A-24); drivers can mark no-shows after 3 minutes at the stop. | [6](#6-cancellation-rules) |
 | A-11 | Driver cancellation (before the first pickup) returns passengers to `REQUESTED`. | [6.3](#63-driver-cancellation-and-no-shows) |
 | A-12 | Fares are locked at drop-off; passengers never pay more than the estimate. | [7](#7-fare--payment) |
 | A-13 | Money is stored as integer paisa. | [7](#7-fare--payment) |
 | A-14 | The 20% discount applies when another passenger shared at least one hop; direct distance is charged. | [7](#7-fare--payment) |
 | A-15 | Payment is cash only. | [7](#7-fare--payment) |
 | A-18 | The system suggests a route from the car's zone and the waiting demand; the driver chooses. | [4.6](#46-route-suggestion) |
-| A-19 | No seat hold: a fitting request takes its seat at once (auto-join); the driver does not confirm each join. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-19 | No seat hold: a fitting request is seated by the next match round, without a driver tap; the driver does not confirm each join. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-20 | A route sells a trip only if it adds at most 2 km, or 40%, to the direct distance. | [3.3](#33-routes) |
 | A-21 | The driver earns ৳10 per carried km + ৳20 per pickup; the platform keeps the rest of the fares. | [7.2](#72-who-gets-what-passenger-driver-platform) |
 | A-16 | One role per account; one vehicle per driver. | [8](#8-users-vehicles--access) |
@@ -409,3 +413,4 @@ The seed data, tests and demo use the cast from the brief throughout.
 | A-25 | Idle drivers see only requests their car can take; the first accept wins; changes reach open screens over SSE. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-26 | Only a trip's first passenger goes through a driver; after an accept, riders already waiting who fit that trip are seated by the system. | [4.4](#44-automatic-join-and-driver-accept) |
 | A-27 | A request that a running trip can take is shown to no driver: the matching round places it, so a driver's tap cannot undo the plan. Drivers see only what an idle car alone can serve. | [4.4](#44-automatic-join-and-driver-accept) |
+| A-28 | Without GPS, a driver's app is "there" while it makes requests or keeps the live stream open; silent 2 minutes → no new riders and free cancels, 15 minutes → a rider on board may end the ride. | [4.4](#44-automatic-join-and-driver-accept) |

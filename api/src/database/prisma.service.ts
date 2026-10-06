@@ -1,4 +1,8 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  OnApplicationShutdown,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import type { EnvironmentVariables } from '../config/env.validation.js';
@@ -11,7 +15,7 @@ import { PrismaClient } from '../generated/prisma/client.js';
 @Injectable()
 export class PrismaService
   extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy
+  implements OnModuleInit, OnApplicationShutdown
 {
   constructor(config: ConfigService<EnvironmentVariables, true>) {
     const adapter = new PrismaPg({
@@ -19,6 +23,12 @@ export class PrismaService
       max: config.get('DATABASE_POOL_MAX', { infer: true }),
       // Give up after 5 seconds instead of waiting forever for a stuck database.
       connectionTimeoutMillis: 5000,
+      // No single query may run for ever: the server stops it after 10 s (longer than any
+      // real query here; a transaction's own limit is 10 s too), and the client gives up after
+      // 15 s even if the connection went quiet (a half-open TCP connection never answers).
+      // Without this, a hung query would leave the matcher's round "running" for good.
+      statement_timeout: 10_000,
+      query_timeout: 15_000,
     });
     super({ adapter });
   }
@@ -31,7 +41,9 @@ export class PrismaService
     await this.$queryRaw`SELECT 1`;
   }
 
-  async onModuleDestroy(): Promise<void> {
+  // The last shutdown step: Nest runs it after the HTTP server has closed, so requests still
+  // in flight on SIGTERM finish against a working pool (onModuleDestroy runs before that).
+  async onApplicationShutdown(): Promise<void> {
     await this.$disconnect();
   }
 }

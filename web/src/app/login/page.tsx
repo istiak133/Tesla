@@ -34,6 +34,8 @@ export default function LoginPage() {
         body: { role: as, email, password },
       }),
     onSuccess: (user) => {
+      // A new user in this tab: nothing cached for an earlier one may show.
+      queryClient.removeQueries();
       queryClient.setQueryData(["me"], user);
       router.replace(homeFor(user));
     },
