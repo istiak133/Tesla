@@ -38,6 +38,10 @@ export type Ride = {
   cancellationFeePaisa: number;
   cancelNowFeePaisa: number;
   duesPaisa: number;
+  // The driver's app has not reached the server for minutes: cancelling is free, and once
+  // canEndRide is true a passenger on board may end the ride.
+  driverSilent: boolean;
+  canEndRide: boolean;
   createdAt: string;
   driver: { name: string; vehicleName: string } | null;
   route: {
@@ -90,6 +94,9 @@ export type TripPassenger = {
   estimatedFarePaisa: number;
   finalFarePaisa: number | null;
   duesPaisa: number; // earlier late-cancel fees, collected with this fare
+  // Seated while the car stood at this stop: does not hold the car (leaving re-queues them).
+  seatedAfterArrival: boolean;
+  noShowFrom: string | null; // when "No-show" opens for a rider waiting at this stop
 };
 
 export type DriverState = {
@@ -145,4 +152,14 @@ export type RouteSuggestions = {
     passesYou: boolean;
     waitingAhead: number;
   }[];
+};
+
+/** What the driver collects in cash at a drop-off (returned by the drop-off call). */
+export type DropOffReceipt = {
+  rideId: string;
+  passengerName: string;
+  finalFarePaisa: number;
+  duesCollectedPaisa: number;
+  totalPaisa: number;
+  shared: boolean;
 };

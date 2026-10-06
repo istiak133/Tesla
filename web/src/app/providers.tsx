@@ -14,9 +14,14 @@ import { LiveUpdates } from "@/lib/live";
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => {
     // If the session expires while a screen is open, any call answers 401.
-    // Marking the user as logged out makes AppShell send them to /login.
+    // Marking the user as logged out makes AppShell send them to /login. Everything else that
+    // was cached for them is dropped too: on a shared phone the next person to log in in this
+    // tab must never see the previous user's ride or history, even for a moment.
     const onError = (error: Error) => {
       if (error instanceof ApiError && error.status === 401) {
+        client.removeQueries({
+          predicate: (query) => query.queryKey[0] !== "me",
+        });
         client.setQueryData(["me"], null);
       }
     };
