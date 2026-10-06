@@ -52,6 +52,7 @@ function car(
   return {
     vehicleId,
     poolId: `pool-${vehicleId}`,
+    routeId: 'route-utt-bsh',
     createdAt: minutesAgo(options.ageMinutes ?? 10),
     status: RideStatus.MATCHED,
     currentStop: CODES.indexOf(at),
@@ -354,5 +355,7 @@ describe('the search finds the best plan, checked against brute force', () => {
     for (const planned of plan.trips) {
       expect(planned.requestIds.length).toBeLessThanOrEqual(3);
     }
+    // Not empty: the search goes deep first, so a full plan is found within a few steps.
+    expect(plan.seatsServed).toBeGreaterThan(0);
   });
 });

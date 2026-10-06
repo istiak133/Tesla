@@ -111,15 +111,24 @@ describe('Ride requests and pooling (e2e)', () => {
       .send({ pickupZoneId: BAN, dropoffZoneId: UTT, seats: 1 });
     expect(shirinRide.body.status).toBe('REQUESTED');
 
-    // Not listed for Bullet (D-020); accepting it anyway is refused with the reason.
+    // Not listed for Bullet (D-020), and the round does not seat her either. A driver on a
+    // trip cannot accept anyone by hand: riders join a running trip only through the matcher
+    // (D-023).
     expect((await jashim.get('/driver/requests')).body).toEqual([]);
+    expect((await runMatcher(app)).seated).toBe(0);
     const accept = await jashim.post(
       `/driver/requests/${shirinRide.body.id}/accept`,
     );
+    expect(accept.status).toBe(409);
     expect(accept.body).toMatchObject({
-      code: 'NOT_COMPATIBLE',
-      message: 'Not on this route in this direction',
+      code: 'HAS_ACTIVE_POOL',
+      message: 'Riders join your trip automatically',
     });
+    expect(
+      await prisma.rideRequest.findUniqueOrThrow({
+        where: { id: shirinRide.body.id },
+      }),
+    ).toMatchObject({ status: 'REQUESTED' });
   });
 
   it("Bullet's capacity is never exceeded when many riders race for the last seat", async () => {
@@ -183,76 +192,81 @@ describe('Ride requests and pooling (e2e)', () => {
     expect(members.reduce((sum, m) => sum + m.seats, 0)).toBe(pool.seatsTaken);
   });
 
-  it('the PRD case: Nusrat and Shirin claim Bullet’s last seat at the same instant', async () => {
-    // Rafiq takes 2 of Bullet's 3 seats, so exactly one seat is left at Banani.
-    for (let round = 0; round < 5; round++) {
-      await resetDatabase(app);
-      await seedStoryCast(app);
-      BAN = await zoneId(app, 'BAN');
-      MOH = await zoneId(app, 'MOH');
-      GL1 = await zoneId(app, 'GL1');
-      const jashim = await jashimOnline();
-      const rafiq = await loginAs(app, 'rafiq@teslapool.test');
-      const nusrat = await loginAs(app, 'nusrat@teslapool.test');
-      const shirin = await loginAs(app, 'shirin@teslapool.test');
-      const rafiqRide = await rafiq
-        .post('/rides')
-        .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 2 });
-      await jashim
-        .post(`/driver/requests/${rafiqRide.body.id}/accept`)
-        .expect(200);
-
-      // Both see one free seat and ask at the same moment.
-      const [nusratRide, shirinRide] = await Promise.all([
-        nusrat
+  it(
+    'the PRD case: Nusrat and Shirin claim Bullet’s last seat at the same instant',
+    { timeout: RACE_TIMEOUT_MS },
+    async () => {
+      // Rafiq takes 2 of Bullet's 3 seats, so exactly one seat is left at Banani.
+      for (let round = 0; round < 5; round++) {
+        await resetDatabase(app);
+        await seedStoryCast(app);
+        BAN = await zoneId(app, 'BAN');
+        MOH = await zoneId(app, 'MOH');
+        GL1 = await zoneId(app, 'GL1');
+        const jashim = await jashimOnline();
+        const rafiq = await loginAs(app, 'rafiq@teslapool.test');
+        const nusrat = await loginAs(app, 'nusrat@teslapool.test');
+        const shirin = await loginAs(app, 'shirin@teslapool.test');
+        const rafiqRide = await rafiq
           .post('/rides')
-          .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
-        shirin
-          .post('/rides')
-          .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
-      ]);
+          .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 2 });
+        await jashim
+          .post(`/driver/requests/${rafiqRide.body.id}/accept`)
+          .expect(200);
 
-      // Both requests are stored; neither has a seat yet.
-      expect([nusratRide.body.status, shirinRide.body.status]).toEqual([
-        'REQUESTED',
-        'REQUESTED',
-      ]);
+        // Both see one free seat and ask at the same moment.
+        const [nusratRide, shirinRide] = await Promise.all([
+          nusrat
+            .post('/rides')
+            .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
+          shirin
+            .post('/rides')
+            .send({ pickupZoneId: BAN, dropoffZoneId: MOH, seats: 1 }),
+        ]);
 
-      // Two matchers claim the last seat at the same instant, one for each of them.
-      const bullet = await prisma.pool.findFirstOrThrow();
-      await applyInParallel(app, [
-        {
-          vehicleId: bullet.vehicleId,
-          poolId: bullet.id,
-          rideId: nusratRide.body.id,
-        },
-        {
-          vehicleId: bullet.vehicleId,
-          poolId: bullet.id,
-          rideId: shirinRide.body.id,
-        },
-      ]);
-      expect((await runMatcher(app)).seated).toBe(0);
+        // Both requests are stored; neither has a seat yet.
+        expect([nusratRide.body.status, shirinRide.body.status]).toEqual([
+          'REQUESTED',
+          'REQUESTED',
+        ]);
 
-      // Exactly one gets the seat; the other keeps waiting and is not lost.
-      const statuses = await Promise.all(
-        [nusrat, shirin].map(
-          async (agent) => (await agent.get('/rides/current')).body.ride.status,
-        ),
-      );
-      expect(statuses.sort()).toEqual(['MATCHED', 'REQUESTED']);
-      const pool = await prisma.pool.findFirstOrThrow();
-      expect(pool.seatsTaken).toBe(3);
-      // The one who lost keeps waiting (still REQUESTED); Bullet is full, so it is not
-      // in Jashim's list any more, and another car can take it (D-020).
-      expect((await jashim.get('/driver/requests')).body).toEqual([]);
-      expect(
-        await prisma.rideRequest.count({ where: { status: 'REQUESTED' } }),
-      ).toBe(1);
-    }
-  });
+        // Two matchers claim the last seat at the same instant, one for each of them.
+        const bullet = await prisma.pool.findFirstOrThrow();
+        await applyInParallel(app, [
+          {
+            vehicleId: bullet.vehicleId,
+            poolId: bullet.id,
+            rideId: nusratRide.body.id,
+          },
+          {
+            vehicleId: bullet.vehicleId,
+            poolId: bullet.id,
+            rideId: shirinRide.body.id,
+          },
+        ]);
+        expect((await runMatcher(app)).seated).toBe(0);
 
-  it('two accepts at the same moment create one pool, not two', async () => {
+        // Exactly one gets the seat; the other keeps waiting and is not lost.
+        const statuses = await Promise.all(
+          [nusrat, shirin].map(
+            async (agent) =>
+              (await agent.get('/rides/current')).body.ride.status,
+          ),
+        );
+        expect(statuses.sort()).toEqual(['MATCHED', 'REQUESTED']);
+        const pool = await prisma.pool.findFirstOrThrow();
+        expect(pool.seatsTaken).toBe(3);
+        // The one who lost keeps waiting (still REQUESTED); Bullet is full, so it is not
+        // in Jashim's list any more, and another car can take it (D-020).
+        expect((await jashim.get('/driver/requests')).body).toEqual([]);
+        expect(
+          await prisma.rideRequest.count({ where: { status: 'REQUESTED' } }),
+        ).toBe(1);
+      }
+    },
+  );
+
+  it('two accepts at the same moment create one pool, not two; the other rider joins by the matcher', async () => {
     const jashim = await jashimOnline();
     const nusrat = await loginAs(app, 'nusrat@teslapool.test');
     const rafiq = await loginAs(app, 'rafiq@teslapool.test');
@@ -264,14 +278,24 @@ describe('Ride requests and pooling (e2e)', () => {
       .post('/rides')
       .send({ pickupZoneId: BAN, dropoffZoneId: GL1, seats: 1 });
 
-    await Promise.all([
+    const answers = await Promise.all([
       jashim.post(`/driver/requests/${a.body.id}/accept`),
       jashim.post(`/driver/requests/${b.body.id}/accept`),
     ]);
 
+    // The car's lock puts them in order: the first starts the trip, and the second finds a
+    // running trip, which only the matcher adds riders to (D-023).
+    expect(answers.map((answer) => answer.status).sort()).toEqual([200, 409]);
+    expect(answers.find((answer) => answer.status === 409)!.body.code).toBe(
+      'HAS_ACTIVE_POOL',
+    );
     const pools = await prisma.pool.findMany();
     expect(pools).toHaveLength(1);
-    expect(pools[0].seatsTaken).toBe(2);
+    expect(pools[0].seatsTaken).toBe(1);
+
+    // The next round seats the other rider in the same trip.
+    expect((await runMatcher(app)).seated).toBe(1);
+    expect((await prisma.pool.findFirstOrThrow()).seatsTaken).toBe(2);
   });
 
   it('refuses a trip that no Tesla route serves', async () => {
@@ -336,14 +360,11 @@ describe('Ride requests and pooling (e2e)', () => {
     // The match round does not seat him either: Bullet is past his stop.
     expect((await runMatcher(app)).seated).toBe(0);
 
-    // Not listed for Bullet (D-020); accepting it anyway is refused with the reason.
+    // Not listed for Bullet (D-020); a driver on a trip cannot accept by hand (D-023).
     expect((await jashim.get('/driver/requests')).body).toEqual([]);
     const accept = await jashim.post(`/driver/requests/${ride.body.id}/accept`);
     expect(accept.status).toBe(409);
-    expect(accept.body).toMatchObject({
-      code: 'NOT_COMPATIBLE',
-      message: 'The car has already passed Banani',
-    });
+    expect(accept.body).toMatchObject({ code: 'HAS_ACTIVE_POOL' });
   });
 
   it(
@@ -499,6 +520,29 @@ describe('Ride requests and pooling (e2e)', () => {
     await expect(
       prisma.$executeRaw`UPDATE pool_members SET dropoff_stop = pickup_stop`,
     ).rejects.toThrow();
+  });
+
+  it('the hand-written partial indexes the rules rely on are in the database', async () => {
+    // They live only in migration SQL (Prisma cannot express a partial index). A future
+    // migration that dropped one would turn off an invariant silently; this test would fail.
+    const rows = await prisma.$queryRaw<
+      { indexname: string; indexdef: string }[]
+    >`
+      SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'`;
+    const byName = new Map(rows.map((row) => [row.indexname, row.indexdef]));
+    for (const name of [
+      'pools_one_active_per_vehicle',
+      'ride_requests_one_active_per_passenger',
+      'pool_members_one_active_per_request',
+    ]) {
+      expect(byName.get(name)).toMatch(/^CREATE UNIQUE INDEX .* WHERE /);
+    }
+    for (const name of [
+      'ride_requests_unpaid_fees_idx',
+      'ride_requests_cancellation_fee_pool_idx',
+    ]) {
+      expect(byName.has(name)).toBe(true);
+    }
   });
 
   it("users can't see or cancel another user's ride", async () => {

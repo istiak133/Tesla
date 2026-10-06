@@ -3,6 +3,7 @@ import { firstValueFrom, take, toArray } from 'rxjs';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { RealtimeService } from '../src/realtime/realtime.service.js';
 import { MatcherService } from '../src/rides/matcher.service.js';
+import { RidesRepository } from '../src/rides/rides.repository.js';
 import {
   createDriver,
   createPassengers,
@@ -173,6 +174,52 @@ describe('Batch matching (e2e)', () => {
     expect(await driverOf(r1.body.id)).toBeNull();
   });
 
+  it('an unexpected error on one trip does not cost the rest of the round', async () => {
+    await twoRunningTrips();
+    const [e1, e2, e3] = await createPassengers(app, 3);
+    const [p1, p2, p4] = await Promise.all(
+      [e1, e2, e3].map((email) => loginAs(app, email)),
+    );
+    await p1.post('/rides').send(trip(BAN, MOH));
+    await p2.post('/rides').send(trip(BAN, GL1));
+    const r4 = await p4.post('/rides').send(trip(UTT, BAN, 2));
+
+    // The plan has two trips. The first car's lock fails as a dropped connection would.
+    const repository = app.get(RidesRepository);
+    const real = repository.withVehicleLock.bind(repository);
+    let calls = 0;
+    const spy = vi
+      .spyOn(repository, 'withVehicleLock')
+      .mockImplementation((vehicleId, work) => {
+        calls++;
+        if (calls === 1) {
+          return Promise.reject(
+            new Error('Connection terminated unexpectedly'),
+          );
+        }
+        return real(vehicleId, work);
+      });
+    try {
+      const round = await runMatcher(app);
+      expect(round.skipped).toBe(false);
+      expect(round.seated).toBeGreaterThan(0);
+      expect(round.missed).toBeGreaterThan(0);
+      expect(round.seated + round.missed).toBe(3);
+    } finally {
+      spy.mockRestore();
+    }
+    // The next round seats whoever the failed trip left waiting.
+    await runMatcher(app);
+    expect(await statusOf(r4.body.id)).toBe('MATCHED');
+  });
+
+  it('every database connection has a statement timeout', async () => {
+    const rows = await prisma.$queryRaw<
+      { statement_timeout: string }[]
+    >`SHOW statement_timeout`;
+    expect(rows[0].statement_timeout).toBe('10s');
+  });
+
   it('two rounds never run at once in one instance', async () => {
     await twoRunningTrips();
     const [e1] = await createPassengers(app, 1);
@@ -185,7 +232,7 @@ describe('Batch matching (e2e)', () => {
   });
 
   it(
-    'race: an idle driver accepts a request at the instant the matcher seats it elsewhere',
+    'race: an idle driver taps a request at the instant the matcher seats it in a running trip',
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
         await fresh();
@@ -208,26 +255,105 @@ describe('Batch matching (e2e)', () => {
           kamal.post(`/driver/requests/${r1.body.id}/accept`),
         ]);
 
-        // Exactly one seat, in exactly one car, and the loser is told plainly.
+        // A running trip can carry R1, so she belongs to the matcher: Kamal's tap is refused
+        // whichever comes first (D-023). Exactly one seat, in Jashim's car, and no empty trip
+        // is left behind for Kamal.
         const seats = await prisma.poolMember.count({
           where: { rideRequestId: r1.body.id, leftAt: null },
         });
         expect(seats).toBe(1);
         expect(await statusOf(r1.body.id)).toBe('MATCHED');
-        if (accepted.status !== 200) {
-          expect(accepted.status).toBe(409);
-          expect(accepted.body.message).toBe(
-            'Another driver took this request',
-          );
-          // No empty trip is left behind for Kamal.
-          expect((await kamal.get('/driver/pool')).body.pool).toBeNull();
-        } else {
-          expect(await driverOf(r1.body.id)).toBe('Kamal');
-        }
+        expect(await driverOf(r1.body.id)).toBe('Jashim');
+        expect(accepted.status).toBe(409);
+        expect([
+          'A Tesla already on the way is taking this rider',
+          'Another driver took this request',
+        ]).toContain(accepted.body.message);
+        expect((await kamal.get('/driver/pool')).body.pool).toBeNull();
       }
     },
     RACE_TIMEOUT_MS,
   );
+
+  /** `count` riders waiting since long ago from Bashundhara to Uttara, a way no car drives now. */
+  async function oldRequestsNobodyCarries(emails: string[]) {
+    const riders = await prisma.user.findMany({
+      where: { email: { in: emails } },
+    });
+    await prisma.rideRequest.createMany({
+      data: riders.map((rider, i) => ({
+        passengerId: rider.id,
+        pickupZoneId: BSH,
+        dropoffZoneId: UTT,
+        seats: 1,
+        distanceKm: 15,
+        estimatedFarePaisa: 25_500,
+        createdAt: new Date(Date.now() - (120 - i) * 60_000),
+      })),
+    });
+  }
+
+  it('50 old requests no running trip can carry do not hide a newer one that fits', async () => {
+    await twoRunningTrips();
+    const emails = await createPassengers(app, 51);
+    await oldRequestsNobodyCarries(emails.slice(0, 50));
+    const late = await loginAs(app, emails[50]);
+    const ride = await late.post('/rides').send(trip(BAN, MOH));
+    expect(ride.body.status).toBe('REQUESTED');
+
+    // The round reads only requests a running trip can carry, so the 50 older ones (going
+    // the other way) do not fill its window of 50.
+    expect((await runMatcher(app)).seated).toBe(1);
+    expect(await driverOf(ride.body.id)).toBe('Jashim');
+  });
+
+  it("50 old requests an idle car cannot carry do not hide a newer one from its driver's list", async () => {
+    await createDriver(app, {
+      name: 'Kamal',
+      email: 'kamal@teslapool.test',
+      zoneCode: 'BAN',
+      routeCode: 'UTT-BSH',
+    });
+    const kamal = await loginAs(app, 'kamal@teslapool.test');
+    await kamal.post('/driver/online').expect(200);
+    const emails = await createPassengers(app, 51);
+    await oldRequestsNobodyCarries(emails.slice(0, 50));
+    const late = await loginAs(app, emails[50]);
+    const ride = await late.post('/rides').send(trip(BAN, MOH));
+
+    const list = await kamal.get('/driver/requests').expect(200);
+    expect(list.body.map((r: { id: string }) => r.id)).toEqual([ride.body.id]);
+  });
+
+  it("an idle driver's stale tap cannot start a second car for a rider a running trip can carry", async () => {
+    await twoRunningTrips();
+    await createDriver(app, {
+      name: 'Kamal',
+      email: 'kamal@teslapool.test',
+      zoneCode: 'BAN',
+      routeCode: 'UTT-BSH',
+    });
+    const kamal = await loginAs(app, 'kamal@teslapool.test');
+    await kamal.post('/driver/online').expect(200);
+    const [e1] = await createPassengers(app, 1);
+    const p1 = await loginAs(app, e1);
+    const r1 = await p1.post('/rides').send(trip(BAN, MOH));
+
+    // Hidden from Kamal's list, but a stale screen could still send the accept.
+    expect((await kamal.get('/driver/requests')).body).toEqual([]);
+    const tap = await kamal.post(`/driver/requests/${r1.body.id}/accept`);
+    expect(tap.status).toBe(409);
+    expect(tap.body).toMatchObject({
+      code: 'ALREADY_TAKEN',
+      message: 'A Tesla already on the way is taking this rider',
+    });
+    expect((await kamal.get('/driver/pool')).body.pool).toBeNull();
+    expect(await statusOf(r1.body.id)).toBe('REQUESTED');
+
+    // The round seats her in Jashim's trip.
+    expect((await runMatcher(app)).seated).toBe(1);
+    expect(await driverOf(r1.body.id)).toBe('Jashim');
+  });
 
   it('tells open screens when a round seats someone, and stays quiet when it seats nobody', async () => {
     await twoRunningTrips();

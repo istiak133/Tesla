@@ -2,6 +2,8 @@ import {
   CANCELLATION_FEE_PAISA,
   CANCELLATION_GRACE_MS,
   cancellationFeePaisa,
+  NO_SHOW_WAIT_MS,
+  noShowAllowedFrom,
 } from './cancellation.js';
 
 describe('late-cancel fee (D-018)', () => {
@@ -50,5 +52,23 @@ describe('late-cancel fee (D-018)', () => {
         now,
       }),
     ).toBe(CANCELLATION_FEE_PAISA);
+  });
+});
+
+describe('no-show wait', () => {
+  const arrived = new Date(Date.UTC(2026, 9, 6, 8, 0));
+  const minutesAfter = (minutes: number) =>
+    new Date(arrived.getTime() + minutes * 60_000);
+
+  it('counts from the arrival for a passenger seated before the car came', () => {
+    expect(noShowAllowedFrom(arrived, minutesAfter(-10))).toEqual(
+      new Date(arrived.getTime() + NO_SHOW_WAIT_MS),
+    );
+  });
+
+  it('counts from the seat for a passenger seated while the car was already there', () => {
+    expect(noShowAllowedFrom(arrived, minutesAfter(2))).toEqual(
+      new Date(minutesAfter(2).getTime() + NO_SHOW_WAIT_MS),
+    );
   });
 });

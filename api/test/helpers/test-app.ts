@@ -3,6 +3,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../../src/app.module.js';
 import { configureApp } from '../../src/app.setup.js';
 import { PrismaService } from '../../src/database/prisma.service.js';
+import { NO_SHOW_WAIT_MS } from '../../src/fares/cancellation.js';
 import { seedGeography } from '../../src/seed/seed-data.js';
 
 /** Starts the whole API the same way main.ts does, against the real test database. */
@@ -146,6 +147,27 @@ import { MatcherService } from '../../src/rides/matcher.service.js';
  */
 export async function runMatcher(app: NestExpressApplication) {
   return app.get(MatcherService).runOnce();
+}
+
+/**
+ * The car has waited the no-show time at its stop: moves the arrival, and the seat of every
+ * rider waiting there, NO_SHOW_WAIT_MS (and a second) into the past.
+ */
+export async function waitedAtStop(app: NestExpressApplication) {
+  const prisma = app.get(PrismaService);
+  const past = new Date(Date.now() - NO_SHOW_WAIT_MS - 1_000);
+  await prisma.pool.updateMany({
+    where: { status: 'DRIVER_ARRIVED' },
+    data: { arrivedAt: past },
+  });
+  await prisma.poolMember.updateMany({
+    where: {
+      leftAt: null,
+      rideRequest: { status: 'DRIVER_ARRIVED' },
+      joinedAt: { gt: past },
+    },
+    data: { joinedAt: past },
+  });
 }
 
 /**
