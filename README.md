@@ -32,8 +32,7 @@ A ride-pooling MVP built around the PRD's cast: driver **Jashim** and his three-
 - 🎬 **Demo video:** https://www.youtube.com/watch?v=eTIudjhgNjY
 - ✅ **Status:** MVP complete: en-route pooling on fixed routes, a stop-by-stop trip, fares and the driver/platform money split
 - 🧪 **Quality:** 106 unit tests (API and web) and 160 end-to-end tests against PostgreSQL, CI on every pull request
-- 🆕 **After the submission (v1.4.0):** batch matching, seating all waiting riders together instead of one at a time (see [How a request finds a car](#-routes-and-matching-rules)). Everything up to v1.3.3 is what was submitted.
-- 🛠️ **After the submission (v1.5.0):** a review of the whole system, and every high and medium finding fixed and tested: old unservable requests can no longer hide new ones, a driver whose app goes silent no longer holds riders, no-shows wait 3 minutes, the amount to pay is shown at the drop-off, a per-account login limit, no cross-site form posts, a clean shutdown (see [D-024](decisions.md)).
+- 🆕 **After the submission:** batch matching (v1.4.0) and a few bug fixes (v1.5.0). Everything up to v1.3.3 is what was submitted.
 
 ---
 
